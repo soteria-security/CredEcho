@@ -121,4 +121,4 @@ $script:CredEchoNonBrowserAgent = @(
     'wget'
 )
 
-Export-ModuleMember -Function 'Invoke-CredEchoTriage'
+Export-ModuleMember -Function 'Invoke-CredEchoTriage', 'New-CredEchoReport'

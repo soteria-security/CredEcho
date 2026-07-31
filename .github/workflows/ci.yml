@@ -58,14 +58,17 @@ jobs:
       - name: Import the module and verify the public surface
         run: |
           Import-Module ./CredEcho.psd1 -Force -ErrorAction Stop
-          $exported = @(Get-Command -Module CredEcho).Name
+          $expected = @('Invoke-CredEchoTriage', 'New-CredEchoReport')
+          $exported = @(@(Get-Command -Module CredEcho).Name | Sort-Object)
           Write-Host "Exported: $($exported -join ', ')"
-          if ($exported.Count -ne 1 -or $exported[0] -ne 'Invoke-CredEchoTriage') {
-              throw "Expected only Invoke-CredEchoTriage to be exported, found: $($exported -join ', ')"
+          if (Compare-Object -ReferenceObject $expected -DifferenceObject $exported) {
+              throw "Expected exactly $($expected -join ' and '), found: $($exported -join ', ')"
           }
-          $help = Get-Help Invoke-CredEchoTriage -Full
-          if (@($help.Examples.Example).Count -lt 3) { throw 'Comment-based help must carry at least three examples.' }
-          if (-not $help.alertSet) { throw 'Comment-based help must carry a NOTES block.' }
+          foreach ($name in $expected) {
+              $help = Get-Help $name -Full
+              if (@($help.Examples.Example).Count -lt 3) { throw "$($name) must carry at least three examples." }
+              if (-not $help.alertSet) { throw "$($name) must carry a NOTES block." }
+          }
 
       - name: PSScriptAnalyzer
         run: |

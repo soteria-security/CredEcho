@@ -129,11 +129,17 @@ Connect-MgGraph -Scopes 'AuditLogsQuery-Entra.Read.All', 'AuditLogsQuery-Exchang
 Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042'
 ```
 
-With enrichment and the stronger corroboration control:
+Adding the branded HTML report:
+
+```powershell
+Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042' -IncludeHtmlReport
+```
+
+With enrichment, the stronger corroboration control, and the report:
 
 ```powershell
 Connect-MgGraph -Scopes 'AuditLogsQuery-Entra.Read.All', 'AuditLogsQuery-Exchange.Read.All', 'Application.Read.All', 'AuditLog.Read.All'
-Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042' -IncludeSignInEnrichment -TenantWideCorroboration -Verbose
+Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042' -IncludeSignInEnrichment -TenantWideCorroboration -IncludeHtmlReport -Verbose
 ```
 
 When the validation events have already aged out and the indicators come from outside the tool:
@@ -252,9 +258,62 @@ it has no rows, because an empty artifact and a missing artifact mean different 
 | `ValidationEvents.csv` | The phase one detections with their error codes and application identifiers. |
 | `FlaggedSignIns.csv` | One row per scored sign-in with its signal list. |
 | `FollowOnActions.csv` | The phase three persistence actions. |
-| `TriageResults.json` | A structured summary suitable for downstream report rendering. |
+| `TriageResults.json` | A structured summary, and the input to the report renderer. |
+| `TriageReport.html` | The branded report. Written only when `-IncludeHtmlReport` is specified. |
 
-This repository generates no HTML.
+## Reporting
+
+`-IncludeHtmlReport` writes `TriageReport.html` alongside the delimited files. `New-CredEchoReport`
+renders the same report from a saved `TriageResults.json`, so the presentation can be regenerated
+without querying the tenant again.
+
+```powershell
+New-CredEchoReport -InputPath 'C:\Cases\1042\TriageResults.json'
+New-CredEchoReport -InputPath 'C:\Cases\1042\TriageResults.json' -OutputPath 'C:\Cases\1042\Deliverables\AccountTriage.html' -PassThru
+```
+
+### Self-contained by design
+
+The generated file opens from a file URI with networking disabled. There is no external
+stylesheet, no web font, no content delivery network script, no image file, and no dependency on
+any path outside the module. The stylesheet and both script blocks are inlined, the triage data is
+injected as a single JSON object, and vanilla JavaScript renders the account list and drives the
+filters. The only absolute address in the file is the footer link.
+
+Values that originate in tenant data are encoded before they reach the page. User agent strings
+are attacker controlled and do arrive carrying angle brackets, quotes, and closing tags, so they
+are encoded rather than trusted, and they render as literal text.
+
+The report carries a sidebar with section and verdict navigation, a verdict summary strip, an
+engagement context strip, a scope and limitations panel, an attacker indicator panel, and one
+expandable card per account. Each expanded card shows a timeline of the validation event followed
+by every flagged sign-in and follow-on action in chronological order, a table of scored sign-ins,
+and a table of follow-on actions. Filters cover the four verdict tiers and a free-text search
+across user principal name, source address, and user agent, with a live count of accounts shown.
+A theme toggle follows the system preference on first load and then persists the choice.
+
+### Print and PDF
+
+Use the browser print dialog to produce a PDF. The sidebar, export bar, theme toggle, and filter
+controls are hidden, a brand header appears on page one, every account card is expanded so no
+finding is lost inside a collapsed panel, page breaks are avoided inside a card where practical,
+and dark mode backgrounds are reset to white so the PDF renders on white regardless of the active
+theme.
+
+### Verdict ladder
+
+The same four tiers appear in the summary strip, the filter chips, the sidebar, and the account
+sort order. All four cards render even at a count of zero, so the reader sees the complete picture.
+
+| Verdict | Color | Meaning |
+| --- | --- | --- |
+| Confirmed | `#dc2626` | Highest confidence of unauthorized access. |
+| Probable | `#ea580c` | Anomalous against baseline, short of a direct indicator match. |
+| Possible | `#7c3aed` | Unresolved rather than lesser. Requires analyst triage. |
+| NoIndicators | `#16a34a` | No anomalous post-validation access found within the retained window. |
+
+Possible is deliberately violet rather than amber. It is not a lesser severity claim, it is an
+unresolved one. Blue is reserved for the brand accent and is never used for a verdict.
 
 ## Limitations
 
@@ -283,6 +342,7 @@ CredEcho/
   CredEcho.psm1
   Public/
     Invoke-CredEchoTriage.ps1
+    New-CredEchoReport.ps1
   Private/
     Get-CredEchoAuditRecord.ps1
     Get-CredEchoValidationEvent.ps1
@@ -292,6 +352,7 @@ CredEcho/
     Get-CredEchoSignInEnrichment.ps1
     Test-CredEchoGraphContext.ps1
     Export-CredEchoResult.ps1
+    New-CredEchoHtmlReport.ps1
   Tools/
     Probe-AuditDataCasing.ps1
   Tests/
@@ -299,7 +360,8 @@ CredEcho/
   .github/workflows/ci.yml
 ```
 
-The public surface is a single cmdlet, `Invoke-CredEchoTriage`. Everything else is private.
+The public surface is two cmdlets, `Invoke-CredEchoTriage` for collection and
+`New-CredEchoReport` for rendering a saved result. Everything else is private.
 
 `Tools/Probe-AuditDataCasing.ps1` pulls one audit record from a live tenant and dumps its
 `auditData` node, reporting the .NET type of each node, the exact key casing as returned, whether

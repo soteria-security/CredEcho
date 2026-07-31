@@ -3,7 +3,7 @@ Output/
 Results/
 *.csv
 *.json
-!*.psd1.json
+TriageReport.html
 
 # PowerShell
 *.ps1xml.bak

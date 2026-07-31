@@ -15,7 +15,7 @@
         @{ ModuleName = 'Microsoft.Graph.Authentication'; ModuleVersion = '2.0.0' }
     )
 
-    FunctionsToExport    = @('Invoke-CredEchoTriage')
+    FunctionsToExport    = @('Invoke-CredEchoTriage', 'New-CredEchoReport')
     CmdletsToExport      = @()
     VariablesToExport    = @()
     AliasesToExport      = @()

@@ -112,6 +112,13 @@ function Invoke-CredEchoTriage {
     .PARAMETER Delimiter
     Field delimiter for the delimited output files. Defaults to a semicolon.
 
+    .PARAMETER IncludeHtmlReport
+    Additionally writes TriageReport.html to the output directory, alongside the delimited files
+    and the JSON summary. The report is self-contained: it opens from a file URI with networking
+    disabled, and it carries no external stylesheet, no web font, no content delivery network
+    script, and no image file. Use New-CredEchoReport to re-render the same report later from the
+    saved TriageResults.json without querying the tenant again.
+
     .PARAMETER UpnFilterChunkSize
     Number of account names sent in a single userPrincipalNameFilters array. Defaults to 25.
 
@@ -129,6 +136,13 @@ function Invoke-CredEchoTriage {
     Runs the default triage across the trailing 180 days and writes all five artifacts. This is
     the normal starting point when the only thing known is that a credential validation
     campaign touched the tenant.
+
+    .EXAMPLE
+    Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042' -IncludeHtmlReport
+
+    Adds TriageReport.html to the output. The file is self-contained, so it opens from a file URI
+    with networking disabled and prints to PDF from the browser print dialog with every account
+    card expanded.
 
     .EXAMPLE
     Connect-MgGraph -Scopes 'AuditLogsQuery-Entra.Read.All', 'AuditLogsQuery-Exchange.Read.All', 'Application.Read.All', 'AuditLog.Read.All'
@@ -265,6 +279,8 @@ function Invoke-CredEchoTriage {
         [System.Collections.IDictionary] $FollowOnOperation = $script:CredEchoFollowOnOperation,
 
         [string] $Delimiter = ';',
+
+        [switch] $IncludeHtmlReport,
 
         [ValidateRange(1, 200)]
         [int] $UpnFilterChunkSize = 25,
@@ -676,15 +692,33 @@ function Invoke-CredEchoTriage {
         -FlaggedSignIn $flaggedSignIn.ToArray() -FollowOnAction $followOnAction `
         -Summary $summary -Delimiter $Delimiter
 
-    Write-Verbose "Wrote $($export.File.Count) artifacts to $($export.OutputDirectory)."
-
-    [pscustomobject]@{
+    $result = [pscustomobject]@{
         Summary         = $summary
         AccountVerdict  = $accountVerdict.ToArray()
         ValidationEvent = @($validation.ValidationEvent)
         FlaggedSignIn   = $flaggedSignIn.ToArray()
         FollowOnAction  = $followOnAction
+    }
+
+    $file = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($item in @($export.File)) { $file.Add([string] $item) }
+
+    if ($IncludeHtmlReport) {
+        $reportPath = New-CredEchoHtmlReport -TriageResult $result `
+            -Path (Join-Path -Path $export.OutputDirectory -ChildPath 'TriageReport.html')
+        $file.Add($reportPath)
+        Write-Verbose "Wrote the self-contained HTML report to $($reportPath)."
+    }
+
+    Write-Verbose "Wrote $($file.Count) artifacts to $($export.OutputDirectory)."
+
+    [pscustomobject]@{
+        Summary         = $summary
+        AccountVerdict  = $result.AccountVerdict
+        ValidationEvent = $result.ValidationEvent
+        FlaggedSignIn   = $result.FlaggedSignIn
+        FollowOnAction  = $result.FollowOnAction
         OutputDirectory = $export.OutputDirectory
-        File            = $export.File
+        File            = $file.ToArray()
     }
 }

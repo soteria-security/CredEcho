@@ -769,6 +769,25 @@ Describe 'Invoke-CredEchoTriage end to end' {
             $json.Summary.TenantId | Should -Be '00000000-1111-2222-3333-444444444444'
             $json.Summary.CorroborationScope | Should -Be 'TriageTargetAccountsOnly'
         }
+
+        It 'writes no HTML report unless the switch is specified' {
+            Join-Path (Join-Path $TestDrive 'out') 'TriageReport.html' | Should -Not -Exist
+        }
+
+        It 'writes the HTML report when IncludeHtmlReport is specified' {
+            $target = Join-Path $TestDrive 'withreport'
+            $run = Invoke-CredEchoTriage -OutputDirectory $target `
+                -SearchStartTime ([datetime]::SpecifyKind([datetime]'2026-06-01T00:00:00', 'Utc')) `
+                -SearchEndTime ([datetime]::SpecifyKind([datetime]'2026-06-30T00:00:00', 'Utc')) `
+                -AllowedApplicationId $script:CredEchoTestApp.Allowed -BaselineDays 90 -IncludeHtmlReport
+
+            $reportPath = Join-Path $target 'TriageReport.html'
+            $reportPath | Should -Exist
+            @($run.File).Count | Should -Be 6
+            $html = Get-Content -LiteralPath $reportPath -Raw
+            $html | Should -BeLike '*var REPORT_DATA = *'
+            $html | Should -Not -BeLike '*__CREDECHO_REPORT_DATA__*'
+        }
     }
 
     Context 'Read only' {
@@ -782,8 +801,9 @@ Describe 'Invoke-CredEchoTriage end to end' {
             }
         }
 
-        It 'exports only the triage cmdlet' {
-            @(Get-Command -Module CredEcho).Name | Should -Be 'Invoke-CredEchoTriage'
+        It 'exports only the triage cmdlet and the report cmdlet' {
+            @(Get-Command -Module CredEcho).Name | Sort-Object |
+                Should -Be @('Invoke-CredEchoTriage', 'New-CredEchoReport')
         }
     }
 }
@@ -820,6 +840,338 @@ Describe 'Test-CredEchoGraphContext' {
             Mock Write-Warning { }
             Test-CredEchoGraphContext -AnyOfScope 'AuditLog.Read.All' -Capability 'enrichment' -Optional | Should -BeFalse
             Should -Invoke Write-Warning -Times 1
+        }
+    }
+}
+
+Describe 'HTML report renderer' {
+
+    BeforeAll {
+        # Angle brackets, both quote characters, an event handler, and a literal closing script
+        # tag. Every one of these has to reach the page as inert text.
+        $script:HostileAgent = 'python-requests/2.32.3 <img src=x onerror="alert(''pwn'')"> </script><script>fetch(1)</script>'
+
+        function Get-CredEchoRendererFixture {
+            $attackerApp = 'ffff9999-9999-9999-9999-999999999999'
+
+            # Every indicator list below holds exactly one element on purpose. A one-element
+            # collection is the case that silently degrades to a scalar on serialisation.
+            $validation = @(
+                [pscustomobject]@{ RecordId = 'v1'; TimeStamp = '2026-06-10T02:00:00Z'; Operation = 'UserLoginFailed'
+                    RecordType = 'azureActiveDirectoryStsLogon'; UserPrincipalName = 'confirmed@contoso.com'
+                    ApplicationId = $attackerApp; ErrorCode = '700016'; ErrorClass = 'PostPassword'
+                    ErrorName = 'UnauthorizedClient_DoesNotMatchRequest'; ErrorConfidence = 'Observed'
+                    LogonError = 'InvalidResourceServicePrincipalNotFound'; IpAddress = '185.220.101.44'
+                    IpPrefix = '185.220.101.0/24'; UserAgent = $script:HostileAgent
+                    RequestType = 'OAuth2:Token'; ResultStatusDetail = ''; IsSuccess = $false }
+            )
+
+            $flagged = @(
+                [pscustomobject]@{ UserPrincipalName = 'confirmed@contoso.com'; TimeStamp = '2026-06-15T09:00:00Z'
+                    Tier = 'Confirmed'; Signal = @('SourceAddressSeenInValidationActivity:Confirmed')
+                    IpAddress = '185.220.101.44'; IpPrefix = '185.220.101.0/24'; UserAgent = $script:HostileAgent
+                    ApplicationId = $attackerApp; RecordId = 's1'; ClientAppUsed = 'Other clients'
+                    ConditionalAccessStatus = 'notApplied'; AuthenticationRequirement = 'singleFactorAuthentication'
+                    AuthenticationProtocol = 'ropc'; RiskLevelDuringSignIn = 'high'
+                    AutonomousSystemNumber = 14061; Enriched = $true }
+                [pscustomobject]@{ UserPrincipalName = 'nobaseline@contoso.com'; TimeStamp = '2026-06-15T11:45:00Z'
+                    Tier = 'Possible'; Signal = @('NoveltyCouldNotBeAssessed:Possible')
+                    IpAddress = '8.8.8.8'; IpPrefix = '8.8.8.0/24'; UserAgent = 'Mozilla/5.0 (Linux)'
+                    ApplicationId = 'aaaa1111-1111-1111-1111-111111111111'; RecordId = 's2'; ClientAppUsed = ''
+                    ConditionalAccessStatus = ''; AuthenticationRequirement = ''; AuthenticationProtocol = ''
+                    RiskLevelDuringSignIn = ''; AutonomousSystemNumber = $null; Enriched = $false }
+            )
+
+            $followOn = @(
+                [pscustomobject]@{ UserPrincipalName = 'confirmed@contoso.com'; TimeStamp = '2026-06-17T11:00:00Z'
+                    Operation = 'New-InboxRule'; Category = 'InboxRule'; RecordType = 'exchangeAdmin'
+                    IpAddress = '185.220.101.44'; TargetObject = 'Forward all'; RecordId = 'f1'; IsTargetAccount = $true }
+            )
+
+            $verdicts = @(
+                [pscustomobject]@{ UserPrincipalName = 'confirmed@contoso.com'; Verdict = 'Confirmed'
+                    ConfirmedSignalCount = 1; ProbableSignalCount = 0; PossibleSignalCount = 0
+                    DistinctSignal = @('SourceAddressSeenInValidationActivity:Confirmed')
+                    FirstValidation = '2026-06-10T02:00:00Z'; LastValidation = '2026-06-10T02:00:00Z'
+                    ValidationErrorCode = @('700016'); ValidationSourceAddress = @('185.220.101.44')
+                    ValidationTimestampAssumed = $false; PostValidationSignInCount = 3; FlaggedSignInCount = 1
+                    FollowOnActionCount = 1; BaselineAssessed = $true; BaselineSignInCount = 42
+                    NoveltyAssessment = 'Assessed' }
+                [pscustomobject]@{ UserPrincipalName = 'probable@contoso.com'; Verdict = 'Probable'
+                    ConfirmedSignalCount = 0; ProbableSignalCount = 1; PossibleSignalCount = 0
+                    DistinctSignal = @('NetworkPrefixSeenInValidationActivity:Probable')
+                    FirstValidation = '2026-06-10T02:06:00Z'; LastValidation = '2026-06-10T02:06:00Z'
+                    ValidationErrorCode = @('53003'); ValidationSourceAddress = @('198.51.100.10')
+                    ValidationTimestampAssumed = $false; PostValidationSignInCount = 5; FlaggedSignInCount = 0
+                    FollowOnActionCount = 0; BaselineAssessed = $true; BaselineSignInCount = 18
+                    NoveltyAssessment = 'Assessed' }
+                [pscustomobject]@{ UserPrincipalName = 'nobaseline@contoso.com'; Verdict = 'Possible'
+                    ConfirmedSignalCount = 0; ProbableSignalCount = 0; PossibleSignalCount = 1
+                    DistinctSignal = @('NoveltyCouldNotBeAssessed:Possible')
+                    FirstValidation = $null; LastValidation = $null; ValidationErrorCode = @('50076')
+                    ValidationSourceAddress = @('203.0.113.5'); ValidationTimestampAssumed = $true
+                    PostValidationSignInCount = 1; FlaggedSignInCount = 1; FollowOnActionCount = 0
+                    BaselineAssessed = $false; BaselineSignInCount = 0
+                    NoveltyAssessment = 'Novelty could not be assessed. This account has no successful sign-in in its baseline period.' }
+                [pscustomobject]@{ UserPrincipalName = 'clean@contoso.com'; Verdict = 'NoIndicators'
+                    ConfirmedSignalCount = 0; ProbableSignalCount = 0; PossibleSignalCount = 0
+                    DistinctSignal = @(); FirstValidation = '2026-06-10T02:08:00Z'; LastValidation = '2026-06-10T02:08:00Z'
+                    ValidationErrorCode = @('700016'); ValidationSourceAddress = @('192.0.2.60')
+                    ValidationTimestampAssumed = $false; PostValidationSignInCount = 9; FlaggedSignInCount = 0
+                    FollowOnActionCount = 0; BaselineAssessed = $true; BaselineSignInCount = 63
+                    NoveltyAssessment = 'Assessed' }
+            )
+
+            [pscustomobject]@{
+                Summary         = [pscustomobject]@{
+                    GeneratedUtc = '2026-07-31T18:00:00Z'; ModuleVersion = '1.0.0'
+                    TenantId = '00000000-1111-2222-3333-444444444444'
+                    SearchStartUtc = '2026-02-01T00:00:00Z'; SearchEndUtc = '2026-07-31T00:00:00Z'
+                    BaselineDays = 90; ChunkDays = 30
+                    ValidationEventCount = 1; ValidatedAccountCount = 4; AttackerApplicationIdCount = 1
+                    UsernameOracleEventCount = 38994; UsernameOracleAccountCount = 1476; UsernameOracleSourceCount = 62
+                    SuppressedByRegistrationCount = 1; SuppressedByCorroborationCount = 1; SuppressedByAllowlistCount = 1
+                    SuppressedByRegistration = @('aaaa1111-1111-1111-1111-111111111111')
+                    SuppressedByCorroboration = @('bbbb2222-2222-2222-2222-222222222222')
+                    SuppressedByAllowlist = @('cccc3333-3333-3333-3333-333333333333')
+                    CorroborationAccountThreshold = 3; CorroborationScope = 'Tenant'
+                    SignInEnrichmentAvailable = $true; ExchangeFollowOnAvailable = $true
+                    FlaggedSignInCount = 2; FollowOnActionCount = 1; TriagedAccountCount = 4
+                }
+                AccountVerdict  = $verdicts
+                ValidationEvent = $validation
+                FlaggedSignIn   = $flagged
+                FollowOnAction  = $followOn
+            }
+        }
+
+        $script:Fixture = Get-CredEchoRendererFixture
+        $script:ReportPath = Join-Path $TestDrive 'TriageReport.html'
+        InModuleScope CredEcho -Parameters @{ Fixture = $script:Fixture; Target = $script:ReportPath } {
+            New-CredEchoHtmlReport -TriageResult $Fixture -Path $Target | Out-Null
+        }
+        $script:Html = Get-Content -LiteralPath $script:ReportPath -Raw
+    }
+
+    Context 'Placeholder substitution and payload validity' {
+
+        It 'leaves no placeholder token in the output' {
+            $script:Html | Should -Not -BeLike '*__CREDECHO_REPORT_DATA__*'
+        }
+
+        It 'injects a payload that parses as JSON' {
+            $match = [regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')
+            $match.Success | Should -BeTrue
+            { $match.Groups['json'].Value | ConvertFrom-Json } | Should -Not -Throw
+            $parsed = $match.Groups['json'].Value | ConvertFrom-Json
+            @($parsed.Account).Count | Should -Be 4
+            $parsed.Meta.TenantId | Should -Be '00000000-1111-2222-3333-444444444444'
+        }
+
+        It 'carries all four verdict tiers even where a count is zero' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            foreach ($tier in 'Confirmed', 'Probable', 'Possible', 'NoIndicators') {
+                $parsed.Verdict.PSObject.Properties.Name | Should -Contain $tier
+            }
+            $parsed.Verdict.Confirmed | Should -Be 1
+            $parsed.Verdict.NoIndicators | Should -Be 1
+        }
+
+        It 'serialises a one-element collection as a JSON array rather than a bare scalar' {
+            # Regression guard. A scalar here reaches the page as a string, which answers
+            # truthily and reports a length while having no map method, so the renderer fails on
+            # exactly the reports that carry a single indicator.
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            foreach ($name in 'SourceAddress', 'NetworkPrefix', 'UserAgent', 'ApplicationId',
+                'SuppressedByRegistration', 'SuppressedByCorroboration', 'SuppressedByAllowlist') {
+                $value = $parsed.Indicator.$name
+                $value -is [array] | Should -BeTrue -Because "Indicator.$($name) must be an array, and it holds one element in this fixture"
+                @($value).Count | Should -Be 1
+            }
+            $first = $parsed.Account[0]
+            $first.SignIn -is [array] | Should -BeTrue
+            $first.DistinctSignal -is [array] | Should -BeTrue
+            $first.ValidationErrorCode -is [array] | Should -BeTrue
+            $first.FollowOn -is [array] | Should -BeTrue
+        }
+    }
+
+    Context 'HTML encoding of attacker controlled values' {
+
+        It 'encodes angle brackets and quotes' {
+            InModuleScope CredEcho {
+                $encoded = Protect-CredEchoHtmlText '<img src=x onerror="alert(''p'')">'
+                $encoded | Should -Not -BeLike '*<img*'
+                $encoded | Should -BeLike '*&lt;img*'
+                $encoded | Should -BeLike '*&quot;*'
+                $encoded | Should -BeLike '*&#39;*'
+                $encoded | Should -BeLike '*&gt;*'
+            }
+        }
+
+        It 'encodes the ampersand so an entity cannot be smuggled through' {
+            InModuleScope CredEcho {
+                Protect-CredEchoHtmlText '&lt;script&gt;' | Should -Be '&amp;lt;script&amp;gt;'
+            }
+        }
+
+        It 'returns an empty string for a null value rather than throwing' {
+            InModuleScope CredEcho {
+                Protect-CredEchoHtmlText $null | Should -Be ''
+            }
+        }
+
+        It 'writes no unescaped attacker markup anywhere in the file' {
+            $script:Html | Should -Not -BeLike '*<img src=x*'
+            $script:Html | Should -Not -BeLike '*<script>fetch*'
+            $script:Html | Should -BeLike '*&lt;img src=x*'
+        }
+
+        It 'leaves exactly the two real closing script tags, so the payload closer was neutralised' {
+            # The fixture user agent contains a literal closing script tag. If it survived intact
+            # the data block would end early and the renderer would never run.
+            ([regex]::Matches($script:Html, '(?i)</script')).Count | Should -Be 2
+        }
+    }
+
+    Context 'File encoding and self-containment' {
+
+        It 'writes the file without a byte order mark' {
+            $bytes = [System.IO.File]::ReadAllBytes($script:ReportPath)
+            $bytes[0] | Should -Be 0x3C
+            ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
+        }
+
+        It 'contains no external resource element' {
+            $script:Html | Should -Not -Match '(?i)<link\b'
+            $script:Html | Should -Not -Match '(?i)<img\b'
+            $script:Html | Should -Not -Match '(?i)<script\b[^>]*\bsrc\s*='
+            $script:Html | Should -Not -Match '(?i)<iframe\b'
+            $script:Html | Should -Not -Match '(?i)@import'
+            $script:Html | Should -Not -Match '(?i)url\('
+        }
+
+        It 'carries exactly one absolute address, the footer link' {
+            $urls = @([regex]::Matches($script:Html, 'https?://[^\s"''<>)]*') | ForEach-Object { $_.Value } | Sort-Object -Unique)
+            $urls.Count | Should -Be 1
+            $urls[0] | Should -Be 'https://soteria.io'
+        }
+
+        It 'inlines a stylesheet and the scripts' {
+            ([regex]::Matches($script:Html, '(?i)<style\b')).Count | Should -Be 1
+            ([regex]::Matches($script:Html, '(?i)<script\b')).Count | Should -Be 2
+        }
+    }
+
+    Context 'Branding and structure' {
+
+        It 'renders the wordmark in the sidebar, the print header, and the footer' {
+            ([regex]::Matches($script:Html, 'class="brand-wordmark">CredEcho<')).Count | Should -Be 3
+        }
+
+        It 'carries the sub-line, the nav sub-tagline, and the footer tagline' {
+            $script:Html | Should -BeLike '*by Soteria*'
+            $script:Html | Should -BeLike '*POST-VALIDATION<br>ACCOUNT TRIAGE*'
+            $script:Html | Should -BeLike '*Cybersecurity Expertise to Protect Your Digital Journey*'
+        }
+
+        It 'persists the theme under the expected key and follows the system preference first' {
+            $script:Html | Should -BeLike "*localStorage.getItem('credecho-theme')*"
+            $script:Html | Should -BeLike "*localStorage.setItem('credecho-theme'*"
+            $script:Html | Should -BeLike '*prefers-color-scheme: dark*'
+        }
+
+        It 'uses the specified verdict colors and no substitute' {
+            foreach ($hex in '#dc2626', '#ea580c', '#7c3aed', '#16a34a') {
+                $script:Html | Should -BeLike "*$($hex)*"
+            }
+        }
+
+        It 'uses the brand palette' {
+            foreach ($hex in '#0a2540', '#061a30', '#1e5bb8', '#4a7fc8', '#60a5fa', '#cdd3f0', '#7a93bd', '#506988', '#123a66', '#0f2e52', '#1a1d2e') {
+                $script:Html | Should -BeLike "*$($hex)*"
+            }
+        }
+
+        It 'includes the six required structural components' {
+            $script:Html | Should -BeLike '*<nav class="sidebar">*'
+            $script:Html | Should -BeLike '*class="print-brand"*'
+            $script:Html | Should -BeLike '*class="page-header"*'
+            $script:Html | Should -BeLike '*id="theme-toggle"*'
+            $script:Html | Should -BeLike '*id="account-list"*'
+            $script:Html | Should -BeLike '*class="brand-footer"*'
+        }
+
+        It 'states the scope limitations in the report itself' {
+            $script:Html | Should -BeLike '*investigative leads rather than proof*'
+            $script:Html | Should -BeLike '*bounded by audit retention*'
+            $script:Html | Should -BeLike '*floor, not a total*'
+            $script:Html | Should -BeLike '*coarse proxy*'
+            $script:Html | Should -BeLike '*unassessable, not clean*'
+        }
+
+        It 'expands every account card and hides the controls in print' {
+            $script:Html | Should -BeLike '*.account-body { display: block !important; }*'
+            $script:Html | Should -BeLike '*.print-brand { display: block !important;*'
+        }
+
+        It 'uses third-person organizational language' {
+            $script:Html | Should -Not -Match '(?i)\byour tenant\b'
+            $script:Html | Should -BeLike "*the organization's tenant*"
+        }
+    }
+
+    Context 'New-CredEchoReport round-trip' {
+
+        BeforeAll {
+            $script:JsonPath = Join-Path $TestDrive 'roundtrip\TriageResults.json'
+            New-Item -Path (Split-Path $script:JsonPath -Parent) -ItemType Directory -Force | Out-Null
+            $script:Fixture | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:JsonPath -Encoding UTF8
+        }
+
+        It 'renders beside the source data by default' {
+            New-CredEchoReport -InputPath $script:JsonPath
+            Join-Path (Split-Path $script:JsonPath -Parent) 'TriageReport.html' | Should -Exist
+        }
+
+        It 'produces the same account set as the direct render' {
+            $written = New-CredEchoReport -InputPath $script:JsonPath -OutputPath (Join-Path $TestDrive 'roundtrip\Explicit.html') -PassThru
+            $written | Should -Exist
+            $roundTripped = Get-Content -LiteralPath $written -Raw
+            $parsed = ([regex]::Match($roundTripped, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            @($parsed.Account).Count | Should -Be 4
+            @($parsed.Account | ForEach-Object { $_.Verdict }) | Should -Be @('Confirmed', 'Probable', 'Possible', 'NoIndicators')
+        }
+
+        It 'keeps the attacker user agent encoded through the JSON round-trip' {
+            $written = New-CredEchoReport -InputPath $script:JsonPath -OutputPath (Join-Path $TestDrive 'roundtrip\Encoded.html') -PassThru
+            $roundTripped = Get-Content -LiteralPath $written -Raw
+            $roundTripped | Should -Not -BeLike '*<img src=x*'
+            $roundTripped | Should -BeLike '*&lt;img src=x*'
+            ([regex]::Matches($roundTripped, '(?i)</script')).Count | Should -Be 2
+        }
+
+        It 'writes the round-tripped file without a byte order mark' {
+            $written = New-CredEchoReport -InputPath $script:JsonPath -OutputPath (Join-Path $TestDrive 'roundtrip\NoBom.html') -PassThru
+            $bytes = [System.IO.File]::ReadAllBytes($written)
+            ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
+        }
+
+        It 'creates the output directory when it does not exist' {
+            $target = Join-Path $TestDrive 'roundtrip\deeper\nested\Report.html'
+            New-CredEchoReport -InputPath $script:JsonPath -OutputPath $target
+            $target | Should -Exist
+        }
+
+        It 'throws a clear message for a missing file' {
+            { New-CredEchoReport -InputPath (Join-Path $TestDrive 'absent.json') } |
+                Should -Throw -ExpectedMessage '*TriageResults.json*'
+        }
+
+        It 'throws a clear message for a file that is not a triage result' {
+            $wrong = Join-Path $TestDrive 'roundtrip\wrong.json'
+            '{"something":"else"}' | Set-Content -LiteralPath $wrong -Encoding UTF8
+            { New-CredEchoReport -InputPath $wrong } | Should -Throw -ExpectedMessage '*Summary*'
         }
     }
 }

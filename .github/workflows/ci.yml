@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  analyze-and-test:
+    name: Analyze and test (${{ matrix.shell }})
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # pwsh covers PowerShell 7, powershell covers the Windows PowerShell 5.1 floor the
+        # manifest declares.
+        shell: [pwsh, powershell]
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install required modules
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -Scope CurrentUser -Force -AllowClobber
+          Install-Module -Name PSScriptAnalyzer -MinimumVersion 1.21.0 -Scope CurrentUser -Force
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Verify every file parses
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem -Path . -Recurse -Include '*.ps1', '*.psm1', '*.psd1' -File) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref] $tokens, [ref] $errors)
+              if ($errors.Count -gt 0) {
+                  $failed = $true
+                  foreach ($parseError in $errors) {
+                      Write-Host "::error file=$($file.FullName),line=$($parseError.Extent.StartLineNumber)::$($parseError.Message)"
+                  }
+              }
+              else {
+                  Write-Host "OK $($file.Name)"
+              }
+          }
+          if ($failed) { throw 'One or more files failed to parse.' }
+
+      - name: Import the module and verify the public surface
+        run: |
+          Import-Module ./CredEcho.psd1 -Force -ErrorAction Stop
+          $exported = @(Get-Command -Module CredEcho).Name
+          Write-Host "Exported: $($exported -join ', ')"
+          if ($exported.Count -ne 1 -or $exported[0] -ne 'Invoke-CredEchoTriage') {
+              throw "Expected only Invoke-CredEchoTriage to be exported, found: $($exported -join ', ')"
+          }
+          $help = Get-Help Invoke-CredEchoTriage -Full
+          if (@($help.Examples.Example).Count -lt 3) { throw 'Comment-based help must carry at least three examples.' }
+          if (-not $help.alertSet) { throw 'Comment-based help must carry a NOTES block.' }
+
+      - name: PSScriptAnalyzer
+        run: |
+          $findings = @(Invoke-ScriptAnalyzer -Path . -Recurse)
+          foreach ($finding in $findings) {
+              $level = if ($finding.Severity -eq 'Information') { 'notice' } elseif ($finding.Severity -eq 'Warning') { 'warning' } else { 'error' }
+              Write-Host "::$($level) file=$($finding.ScriptPath),line=$($finding.Line)::$($finding.RuleName): $($finding.Message)"
+          }
+          Write-Host "Findings: $($findings.Count)"
+          if ($findings.Count -gt 0) { throw "PSScriptAnalyzer reported $($findings.Count) findings." }
+
+      - name: Pester
+        run: |
+          $configuration = New-PesterConfiguration
+          $configuration.Run.Path = './Tests'
+          $configuration.Run.PassThru = $true
+          $configuration.Output.Verbosity = 'Detailed'
+          $configuration.TestResult.Enabled = $true
+          $configuration.TestResult.OutputPath = './testResults.xml'
+          $result = Invoke-Pester -Configuration $configuration
+          Write-Host "Passed: $($result.PassedCount)  Failed: $($result.FailedCount)  Skipped: $($result.SkippedCount)"
+          if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) Pester tests failed." }
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pester-results-${{ matrix.shell }}
+          path: ./testResults.xml
+          if-no-files-found: ignore

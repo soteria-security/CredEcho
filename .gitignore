@@ -1,0 +1,29 @@
+# Output artifacts
+Output/
+Results/
+*.csv
+*.json
+!*.psd1.json
+
+# PowerShell
+*.ps1xml.bak
+PSScriptAnalyzerResults.*
+testResults.xml
+coverage.xml
+
+# Editors
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Credentials and certificates, never commit
+*.pfx
+*.pem
+*.key
+*.cer
+secrets.*

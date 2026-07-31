@@ -5,6 +5,9 @@ Results/
 *.json
 TriageReport.html
 
+# Generated demonstration artifacts
+Mock Reports/
+
 # PowerShell
 *.ps1xml.bak
 PSScriptAnalyzerResults.*

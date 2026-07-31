@@ -286,11 +286,33 @@ are encoded rather than trusted, and they render as literal text.
 
 The report carries a sidebar with section and verdict navigation, a verdict summary strip, an
 engagement context strip, a scope and limitations panel, an attacker indicator panel, and one
-expandable card per account. Each expanded card shows a timeline of the validation event followed
-by every flagged sign-in and follow-on action in chronological order, a table of scored sign-ins,
-and a table of follow-on actions. Filters cover the four verdict tiers and a free-text search
-across user principal name, source address, and user agent, with a live count of accounts shown.
-A theme toggle follows the system preference on first load and then persists the choice.
+expandable card per account. Each expanded card shows the validation error codes with the basis on
+which each was classified, a timeline of the validation event followed by every flagged sign-in and
+follow-on action in chronological order, a table of scored sign-ins, and a table of follow-on
+actions. Filters cover the four verdict tiers and a free-text search across user principal name,
+source address, user agent, and follow-on target object, with a live count of accounts shown. A
+theme toggle follows the system preference on first load and then persists the choice.
+
+Three details in that layout exist because their absence made the report read as more complete than
+it was.
+
+**Follow-on actions name their target object.** The table reports the timestamp, operation,
+category, target object, and source address. An operation alone states that something was created
+without stating what, which is the part an analyst acts on. The target object is the rule, the
+forwarding address, or the role, and it is searchable. Where the audit record carried no target,
+the cell states that rather than rendering empty.
+
+**Error codes are reported with the basis for their classification.** Each code appears with its
+name, its confidence tier, and how many validation events carried it, alongside a note explaining
+that Documented means Microsoft states the check runs after the password is verified, Observed means
+the behavior is reported by third-party research rather than documented, and Ambiguous means
+Microsoft categorizes the code inconsistently. The same annotation appears on each account card. A
+code an account cites that no retained validation event names still appears, with no basis claimed.
+
+**Coverage gaps are stated where they apply.** Where the Exchange record types were unavailable in
+the collection, an additional limitation is appended to the scope panel saying that inbox rules,
+forwarding changes, mailbox permission grants, and transport rules were not evaluated, so the
+follow-on section is not read as complete when it is not.
 
 ### Print and PDF
 

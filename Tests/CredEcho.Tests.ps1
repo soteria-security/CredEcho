@@ -885,7 +885,16 @@ Describe 'HTML report renderer' {
             $followOn = @(
                 [pscustomobject]@{ UserPrincipalName = 'confirmed@contoso.com'; TimeStamp = '2026-06-17T11:00:00Z'
                     Operation = 'New-InboxRule'; Category = 'InboxRule'; RecordType = 'exchangeAdmin'
-                    IpAddress = '185.220.101.44'; TargetObject = 'Forward all'; RecordId = 'f1'; IsTargetAccount = $true }
+                    # An inbox rule name is chosen by whoever created the rule, so the target
+                    # object is attacker controlled on exactly the records that matter most.
+                    IpAddress = '185.220.101.44'; TargetObject = 'Forward all <img src=x onerror="alert(1)">'
+                    RecordId = 'f1'; IsTargetAccount = $true }
+                # No target object. Not every audit record carries one, and the table has to say so
+                # rather than render an empty cell that reads as though nothing was touched.
+                [pscustomobject]@{ UserPrincipalName = 'confirmed@contoso.com'; TimeStamp = '2026-06-17T11:04:00Z'
+                    Operation = 'Add strong authentication method'; Category = 'AuthenticationMethodRegistration'
+                    RecordType = 'azureActiveDirectory'; IpAddress = '185.220.101.44'; TargetObject = ''
+                    RecordId = 'f2'; IsTargetAccount = $true }
             )
 
             $verdicts = @(
@@ -895,7 +904,7 @@ Describe 'HTML report renderer' {
                     FirstValidation = '2026-06-10T02:00:00Z'; LastValidation = '2026-06-10T02:00:00Z'
                     ValidationErrorCode = @('700016'); ValidationSourceAddress = @('185.220.101.44')
                     ValidationTimestampAssumed = $false; PostValidationSignInCount = 3; FlaggedSignInCount = 1
-                    FollowOnActionCount = 1; BaselineAssessed = $true; BaselineSignInCount = 42
+                    FollowOnActionCount = 2; BaselineAssessed = $true; BaselineSignInCount = 42
                     NoveltyAssessment = 'Assessed' }
                 [pscustomobject]@{ UserPrincipalName = 'probable@contoso.com'; Verdict = 'Probable'
                     ConfirmedSignalCount = 0; ProbableSignalCount = 1; PossibleSignalCount = 0
@@ -936,7 +945,7 @@ Describe 'HTML report renderer' {
                     SuppressedByAllowlist = @('cccc3333-3333-3333-3333-333333333333')
                     CorroborationAccountThreshold = 3; CorroborationScope = 'Tenant'
                     SignInEnrichmentAvailable = $true; ExchangeFollowOnAvailable = $true
-                    FlaggedSignInCount = 2; FollowOnActionCount = 1; TriagedAccountCount = 4
+                    FlaggedSignInCount = 2; FollowOnActionCount = 2; TriagedAccountCount = 4
                 }
                 AccountVerdict  = $verdicts
                 ValidationEvent = $validation
@@ -982,7 +991,7 @@ Describe 'HTML report renderer' {
             # truthily and reports a length while having no map method, so the renderer fails on
             # exactly the reports that carry a single indicator.
             $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
-            foreach ($name in 'SourceAddress', 'NetworkPrefix', 'UserAgent', 'ApplicationId',
+            foreach ($name in 'SourceAddress', 'NetworkPrefix', 'UserAgent', 'ApplicationId', 'ErrorCode',
                 'SuppressedByRegistration', 'SuppressedByCorroboration', 'SuppressedByAllowlist') {
                 $value = $parsed.Indicator.$name
                 $value -is [array] | Should -BeTrue -Because "Indicator.$($name) must be an array, and it holds one element in this fixture"
@@ -993,6 +1002,131 @@ Describe 'HTML report renderer' {
             $first.DistinctSignal -is [array] | Should -BeTrue
             $first.ValidationErrorCode -is [array] | Should -BeTrue
             $first.FollowOn -is [array] | Should -BeTrue
+        }
+
+        It 'has no engagement context field that the page never reads' {
+            # Dead field guard. A value can be serialised into the payload and then never consumed,
+            # which reads as reported when it is not. This caught UsernameOracleEventCount, where
+            # the campaign probe volume was carried into the page and silently dropped.
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $scriptText = ($script:Html -split '<script>')[-1]
+            foreach ($name in $parsed.Context.PSObject.Properties.Name) {
+                $scriptText | Should -BeLike "*C.$($name)*" -Because "Context.$($name) is serialised, so the page has to read it or it should not be sent"
+            }
+        }
+    }
+
+    Context 'Follow-on target objects' {
+
+        It 'carries the target object into the payload, encoded' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $confirmed = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'confirmed@contoso.com' })[0]
+            $target = @($confirmed.FollowOn)[0].TargetObject
+            $target | Should -BeLike 'Forward all &lt;img src=x*'
+            $target | Should -Not -BeLike '*<img*'
+        }
+
+        It 'renders a target object column in the follow-on table' {
+            $script:Html | Should -BeLike '*<th>Target object</th>*'
+            $script:Html | Should -BeLike '*r.TargetObject*'
+        }
+
+        It 'names the target object in the timeline detail' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $confirmed = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'confirmed@contoso.com' })[0]
+            $followOnEvent = @($confirmed.Timeline | Where-Object { $_.Label -like 'Follow-on action*' })[0]
+            $followOnEvent.Detail | Should -BeLike '*Forward all*'
+            $followOnEvent.Detail | Should -Not -BeLike '*<img*'
+        }
+
+        It 'includes the target object in the search blob so filtering reaches it' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $confirmed = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'confirmed@contoso.com' })[0]
+            $confirmed.SearchBlob | Should -BeLike '*forward all*'
+        }
+
+        It 'falls back to a stated absence rather than an empty cell' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $confirmed = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'confirmed@contoso.com' })[0]
+            $rows = @($confirmed.FollowOn)
+            $rows.Count | Should -Be 2
+            $rows[1].TargetObject | Should -Be '' -Because 'the fixture carries a record with no target object'
+            $script:Html | Should -BeLike '*not recorded*'
+        }
+
+        It 'omits the target object from the timeline detail where none was recorded' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $confirmed = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'confirmed@contoso.com' })[0]
+            $bare = @($confirmed.Timeline | Where-Object { $_.Label -like '*Add strong authentication method*' })[0]
+            $bare | Should -Not -BeNullOrEmpty
+            $bare.Detail | Should -Not -BeLike '*,*' -Because 'no trailing separator should be left where there is no target'
+        }
+    }
+
+    Context 'Error code confidence' {
+
+        It 'reports each code with its name, basis, and event count' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $codes = @($parsed.Indicator.ErrorCode)
+            $codes.Count | Should -Be 1
+            $codes[0].Code | Should -Be '700016'
+            $codes[0].Name | Should -Be 'UnauthorizedClient_DoesNotMatchRequest'
+            $codes[0].Confidence | Should -Be 'Observed'
+            $codes[0].EventCount | Should -Be 1
+        }
+
+        It 'annotates the account error codes from the same source' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $confirmed = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'confirmed@contoso.com' })[0]
+            @($confirmed.ValidationErrorCode)[0].Code | Should -Be '700016'
+            @($confirmed.ValidationErrorCode)[0].Confidence | Should -Be 'Observed'
+        }
+
+        It 'degrades to a bare code where no validation event carries that code' {
+            # The probable account cites 53003, which no retained validation event names, so there
+            # is no basis to report. The code still has to appear rather than vanish.
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $probable = @($parsed.Account | Where-Object { $_.UserPrincipalName -eq 'probable@contoso.com' })[0]
+            $entry = @($probable.ValidationErrorCode)[0]
+            $entry.Code | Should -Be '53003'
+            $entry.Confidence | Should -Be ''
+        }
+
+        It 'explains the three bases in the report body' {
+            foreach ($phrase in 'Documented means Microsoft states', 'Observed means the behavior is reported',
+                'Ambiguous means Microsoft categorizes') {
+                $script:Html | Should -BeLike "*$($phrase)*"
+            }
+        }
+
+        It 'renders the codes and the account annotation' {
+            $script:Html | Should -BeLike '*Post-password error codes*'
+            $script:Html | Should -BeLike '*Validation error codes*'
+            $script:Html | Should -BeLike '*errorCodeBlock(I.ErrorCode)*'
+        }
+    }
+
+    Context 'Username enumeration volume' {
+
+        It 'reports the enumeration event count as a context card' {
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $parsed.Context.UsernameOracleEventCount | Should -Be 38994
+            $script:Html | Should -BeLike "*Username enumeration events*"
+            $script:Html | Should -BeLike '*C.UsernameOracleEventCount*'
+        }
+    }
+
+    Context 'Conditional mailbox coverage caveat' {
+
+        It 'holds the scope list open for a conditional limitation' {
+            $script:Html | Should -BeLike '*id="scope-list"*'
+            $script:Html | Should -BeLike '*Mailbox follow-on coverage is absent*'
+        }
+
+        It 'gates the caveat on the availability flag rather than always showing it' {
+            $script:Html | Should -BeLike '*if (!C.ExchangeFollowOnAvailable)*'
+            $parsed = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $parsed.Context.ExchangeFollowOnAvailable | Should -BeTrue
         }
     }
 
@@ -1024,7 +1158,22 @@ Describe 'HTML report renderer' {
         It 'writes no unescaped attacker markup anywhere in the file' {
             $script:Html | Should -Not -BeLike '*<img src=x*'
             $script:Html | Should -Not -BeLike '*<script>fetch*'
-            $script:Html | Should -BeLike '*&lt;img src=x*'
+
+            # The encoded form is asserted against the decoded payload rather than the raw file
+            # text, because the two engines spell the same value differently on disk. Windows
+            # PowerShell serialises through JavaScriptSerializer, which escapes the ampersand of
+            # every HTML entity as a six character unicode escape, so the entity never appears
+            # literally in the file. PowerShell 7 writes the entity as is. Both deliver the
+            # identical string to the browser, so the decoded payload is the one assertion that
+            # holds on both.
+            $payload = ([regex]::Match($script:Html, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $indicatorAgent = @($payload.Indicator.UserAgent) -join ' '
+            $indicatorAgent | Should -BeLike '*&lt;img src=x*'
+            $indicatorAgent | Should -Not -BeLike '*<img*'
+
+            $rowAgent = @($payload.Account | ForEach-Object { $_.SignIn } | ForEach-Object { $_.UserAgent }) -join ' '
+            $rowAgent | Should -BeLike '*&lt;img src=x*'
+            $rowAgent | Should -Not -BeLike '*<img*'
         }
 
         It 'leaves exactly the two real closing script tags, so the payload closer was neutralised' {
@@ -1147,7 +1296,12 @@ Describe 'HTML report renderer' {
             $written = New-CredEchoReport -InputPath $script:JsonPath -OutputPath (Join-Path $TestDrive 'roundtrip\Encoded.html') -PassThru
             $roundTripped = Get-Content -LiteralPath $written -Raw
             $roundTripped | Should -Not -BeLike '*<img src=x*'
-            $roundTripped | Should -BeLike '*&lt;img src=x*'
+
+            # Decoded, for the reason given on the direct render assertion above.
+            $payload = ([regex]::Match($roundTripped, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $agent = @($payload.Indicator.UserAgent) -join ' '
+            $agent | Should -BeLike '*&lt;img src=x*'
+            $agent | Should -Not -BeLike '*<img*'
             ([regex]::Matches($roundTripped, '(?i)</script')).Count | Should -Be 2
         }
 

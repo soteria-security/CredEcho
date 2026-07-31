@@ -110,6 +110,30 @@ function New-CredEchoHtmlReport {
         $followOnByAccount[$key].Add($record)
     }
 
+    <#
+    Error code to confidence, keyed by code and built before the account loop so an account card
+    can annotate its own codes from the same source the indicator section uses.
+
+    The confidence tier is not decoration. Microsoft never documented the order in which the
+    sign-in service validates a credential, so the basis for calling a code post-password differs
+    per code. A reader deciding how much weight a validation event carries needs to see which
+    basis applies. EventCount is tenant-wide and is reported only in the indicator section.
+    #>
+    $errorConfidence = [ordered]@{}
+    foreach ($record in @($TriageResult.ValidationEvent)) {
+        $code = [string] $record.ErrorCode
+        if ([string]::IsNullOrWhiteSpace($code)) { continue }
+        if (-not $errorConfidence.Contains($code)) {
+            $errorConfidence[$code] = [pscustomobject]@{
+                Code       = Protect-CredEchoHtmlText $code
+                Name       = Protect-CredEchoHtmlText $record.ErrorName
+                Confidence = Protect-CredEchoHtmlText $record.ErrorConfidence
+                EventCount = 0
+            }
+        }
+        $errorConfidence[$code].EventCount = $errorConfidence[$code].EventCount + 1
+    }
+
     $verdictRank = @{ 'Confirmed' = 0; 'Probable' = 1; 'Possible' = 2; 'NoIndicators' = 3 }
     $ordered = @($TriageResult.AccountVerdict | Sort-Object -Property @{ Expression = { $verdictRank[[string] $_.Verdict] } }, @{ Expression = { [string] $_.UserPrincipalName } })
 
@@ -153,11 +177,15 @@ function New-CredEchoHtmlReport {
         foreach ($action in ($accountFollowOn | Sort-Object -Property @{ Expression = { ConvertTo-CredEchoDateTime $_.TimeStamp } })) {
             $stamp = ConvertTo-CredEchoDateTime $action.TimeStamp
             $searchTerm.Add([string] $action.IpAddress)
+            # The target object names the rule, the forwarding address, or the role. Without it the
+            # table says that something was created but not what, which is the part an analyst acts on.
+            $searchTerm.Add([string] $action.TargetObject)
             $followOnRow.Add([pscustomobject]@{
-                    TimeStamp = Protect-CredEchoHtmlText $(if ($null -ne $stamp) { $stamp.ToString('yyyy-MM-dd HH:mm:ss') } else { '' })
-                    Operation = Protect-CredEchoHtmlText $action.Operation
-                    Category  = Protect-CredEchoHtmlText $action.Category
-                    IpAddress = Protect-CredEchoHtmlText $action.IpAddress
+                    TimeStamp    = Protect-CredEchoHtmlText $(if ($null -ne $stamp) { $stamp.ToString('yyyy-MM-dd HH:mm:ss') } else { '' })
+                    Operation    = Protect-CredEchoHtmlText $action.Operation
+                    Category     = Protect-CredEchoHtmlText $action.Category
+                    TargetObject = Protect-CredEchoHtmlText $action.TargetObject
+                    IpAddress    = Protect-CredEchoHtmlText $action.IpAddress
                 })
         }
 
@@ -191,11 +219,14 @@ function New-CredEchoHtmlReport {
         }
         foreach ($action in $accountFollowOn) {
             $stamp = ConvertTo-CredEchoDateTime $action.TimeStamp
+            $target = Protect-CredEchoHtmlText $action.TargetObject
+            $targetSuffix = ''
+            if (-not [string]::IsNullOrWhiteSpace($target)) { $targetSuffix = ", $($target)" }
             $timelineEvent.Add([pscustomobject]@{
                     Sort   = $stamp
                     Kind   = 'followon'
                     Label  = "Follow-on action, $(Protect-CredEchoHtmlText $action.Operation)"
-                    Detail = "$(Protect-CredEchoHtmlText $action.Category) $(Protect-CredEchoHtmlText $action.IpAddress)"
+                    Detail = "$(Protect-CredEchoHtmlText $action.Category) $(Protect-CredEchoHtmlText $action.IpAddress)$($targetSuffix)"
                     Stamp  = $(if ($null -ne $stamp) { $stamp.ToString('yyyy-MM-dd HH:mm:ss') } else { '' })
                     Tier   = ''
                 })
@@ -224,7 +255,11 @@ function New-CredEchoHtmlReport {
                 FlaggedSignInCount   = [int] $account.FlaggedSignInCount
                 FollowOnActionCount  = [int] $account.FollowOnActionCount
                 NoveltyAssessment    = Protect-CredEchoHtmlText $account.NoveltyAssessment
-                ValidationErrorCode  = @(@($account.ValidationErrorCode) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
+                ValidationErrorCode  = @(@($account.ValidationErrorCode) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object {
+                        $accountCode = [string] $_
+                        if ($errorConfidence.Contains($accountCode)) { $errorConfidence[$accountCode] }
+                        else { [pscustomobject]@{ Code = Protect-CredEchoHtmlText $accountCode; Name = ''; Confidence = ''; EventCount = 0 } }
+                    })
                 DistinctSignal       = @(@($account.DistinctSignal) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
                 SignIn               = $signInRow.ToArray()
                 FollowOn             = $followOnRow.ToArray()
@@ -300,6 +335,7 @@ function New-CredEchoHtmlReport {
             NetworkPrefix            = $indicatorPrefix
             UserAgent                = $indicatorAgent
             ApplicationId            = $indicatorApplication
+            ErrorCode                = @($errorConfidence.Values | Sort-Object -Property Code)
             SuppressedByRegistration = @(@($summary.SuppressedByRegistration) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
             SuppressedByCorroboration = @(@($summary.SuppressedByCorroboration) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
             SuppressedByAllowlist    = @(@($summary.SuppressedByAllowlist) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
@@ -477,6 +513,8 @@ html.dark .ctx-card .label { color: #9aa3ba; }
   background: #f4f6fa; border-radius: 6px; word-break: break-all;
 }
 html.dark .indicator-list li { background: #232742; }
+.code-basis { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.25rem; }
+.account-code { font-size: 0.8125rem; margin-bottom: 0.35rem; }
 .suppression { margin-top: 1rem; border-top: 1px solid #e3e8f2; padding-top: 0.75rem; }
 html.dark .suppression { border-top-color: #2a2f45; }
 
@@ -664,7 +702,7 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       confirmed valid by an adversary, and scores which of those accounts were subsequently
       accessed by someone other than the account owner. The following constraints govern how the
       findings may be read.</p>
-      <ul>
+      <ul id="scope-list">
         <li><strong>The output is investigative leads rather than proof.</strong> A verdict states
         how strongly the retained evidence supports unauthorized access. It is not a
         determination of compromise, and it does not establish what an actor did once inside.
@@ -828,6 +866,7 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     { label: 'Unregistered application identifiers', value: C.UnregisteredApplicationCount },
     { label: 'Distinct attacker source addresses', value: C.AttackerSourceCount },
     { label: 'Validation events', value: C.ValidationEventCount },
+    { label: 'Username enumeration events', value: C.UsernameOracleEventCount },
     { label: 'Flagged sign-ins', value: C.FlaggedSignInCount },
     { label: 'Follow-on actions', value: C.FollowOnActionCount },
     { label: 'Baseline length', value: D.Meta.BaselineDays + ' days' },
@@ -841,6 +880,19 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       '<div class="label">' + c.label + '</div></div>';
   }).join('');
 
+  /* Mailbox coverage is conditional. Where the Exchange record types could not be queried the
+     follow-on section cannot be read as complete, and that limit belongs with the others. */
+  if (!C.ExchangeFollowOnAvailable) {
+    var scopeList = el('scope-list');
+    if (scopeList) {
+      scopeList.insertAdjacentHTML('beforeend',
+        '<li><strong>Mailbox follow-on coverage is absent.</strong> The Exchange record types were ' +
+        'not available in this collection, so inbox rules, forwarding changes, mailbox permission ' +
+        'grants, and transport rules were not evaluated. The follow-on section reflects directory ' +
+        'activity only.</li>');
+    }
+  }
+
   /* ---------- attacker indicators ---------- */
   var I = D.Indicator;
   function block(title, items, emptyText) {
@@ -851,11 +903,35 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     return '<div class="indicator-block"><h3>' + title + ' <span class="muted">(' +
       rows.length + ')</span></h3>' + body + '</div>';
   }
+  /* Each code is reported with the basis on which it was classified as post-password, because
+     that basis is not uniform and the difference changes how much a validation event is worth. */
+  function errorCodeBlock(items) {
+    var rows = list(items);
+    var body = rows.length
+      ? '<ul class="indicator-list">' + rows.map(function (e) {
+          var name = e.Name ? ' ' + e.Name : '';
+          var conf = e.Confidence ? '<span class="signal-tag">' + e.Confidence + '</span>' : '';
+          var count = e.EventCount
+            ? '<span class="muted">' + e.EventCount + (e.EventCount === 1 ? ' event' : ' events') + '</span>'
+            : '';
+          return '<li><span class="mono">' + e.Code + '</span>' + name +
+            '<div class="code-basis">' + conf + count + '</div></li>';
+        }).join('') + '</ul>' +
+        '<p class="muted">Documented means Microsoft states the check runs after the password is ' +
+        'verified. Observed means the behavior is reported by third-party research rather than ' +
+        'documented by Microsoft. Ambiguous means Microsoft categorizes the code inconsistently, ' +
+        'so it is reported without asserting either way.</p>'
+      : '<p class="muted">No post-password error code was recorded on the validation events.</p>';
+    return '<div class="indicator-block"><h3>Post-password error codes <span class="muted">(' +
+      rows.length + ')</span></h3>' + body + '</div>';
+  }
+
   el('indicator-grid').innerHTML =
     block('Source addresses', I.SourceAddress, 'No source address was recorded on the validation events.') +
     block('Network prefixes', I.NetworkPrefix, 'No network prefix could be derived.') +
     block('User agents', I.UserAgent, 'No user agent was recorded on the validation events.') +
-    block('Unregistered application identifiers', I.ApplicationId, 'No application identifier was recorded, which is what a malformed client identifier produces.');
+    block('Unregistered application identifiers', I.ApplicationId, 'No application identifier was recorded, which is what a malformed client identifier produces.') +
+    errorCodeBlock(I.ErrorCode);
 
   function suppressionRow(title, count, items, explanation) {
     var rows = list(items);
@@ -911,10 +987,12 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       return '<p class="muted">No follow-on persistence action was recorded for this account.</p>';
     }
     var h = '<table><thead><tr><th>Timestamp (UTC)</th><th>Operation</th><th>Category</th>' +
-      '<th>Source address</th></tr></thead><tbody>';
+      '<th>Target object</th><th>Source address</th></tr></thead><tbody>';
     rows.forEach(function (r) {
+      var target = r.TargetObject ? r.TargetObject : '<span class="muted">not recorded</span>';
       h += '<tr><td class="num mono">' + r.TimeStamp + '</td><td>' + r.Operation + '</td>' +
-        '<td>' + r.Category + '</td><td class="mono">' + r.IpAddress + '</td></tr>';
+        '<td>' + r.Category + '</td><td>' + target + '</td>' +
+        '<td class="mono">' + r.IpAddress + '</td></tr>';
     });
     return h + '</tbody></table>';
   }
@@ -929,6 +1007,18 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
         '<div class="tl-detail">' + r.Detail + '</div>' +
         '</li>';
     }).join('') + '</ul>';
+  }
+
+  function errorCodeTags(items) {
+    var rows = list(items);
+    if (!rows.length) {
+      return '<p class="muted">No validation error code was recorded for this account. This is expected when the account was supplied by the analyst rather than detected from an audit record.</p>';
+    }
+    return rows.map(function (e) {
+      var name = e.Name ? ' ' + e.Name : '';
+      var conf = e.Confidence ? ' <span class="signal-tag">' + e.Confidence + '</span>' : '';
+      return '<div class="account-code"><span class="mono">' + e.Code + '</span>' + name + conf + '</div>';
+    }).join('');
   }
 
   function accountCard(a) {
@@ -953,6 +1043,7 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       '</div>' +
       '<div class="account-body">' +
         assumedNote + baselineNote +
+        '<div class="subhead">Validation error codes</div>' + errorCodeTags(a.ValidationErrorCode) +
         '<div class="subhead">Timeline</div>' + timelineList(a.Timeline) +
         '<div class="subhead">Scored sign-ins</div>' + signInTable(a.SignIn) +
         '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn) +

@@ -337,6 +337,11 @@ sort order. All four cards render even at a count of zero, so the reader sees th
 Possible is deliberately violet rather than amber. It is not a lesser severity claim, it is an
 unresolved one. Blue is reserved for the brand accent and is never used for a verdict.
 
+`Docs/Reading-The-Verdicts.md` explains the ladder for executives and non-technical reviewers. It
+covers what a verdict does and does not assert, why No Indicators is not a clean result, the four
+annotations that override the verdict at face value, and the questions worth asking in a review
+meeting. Hand it to the client alongside the report.
+
 ## Limitations
 
 - **Read only, by design.** CredEcho performs no remediation. There is no password reset, no token
@@ -375,6 +380,8 @@ CredEcho/
     Test-CredEchoGraphContext.ps1
     Export-CredEchoResult.ps1
     New-CredEchoHtmlReport.ps1
+  Docs/
+    Reading-The-Verdicts.md
   Tools/
     Probe-AuditDataCasing.ps1
   Tests/

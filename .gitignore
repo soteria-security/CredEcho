@@ -24,6 +24,9 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
+# Internal test rigs, never released
+_Local/
+
 # Credentials and certificates, never commit
 *.pfx
 *.pem

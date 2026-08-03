@@ -223,6 +223,30 @@ Account-level verdicts are Confirmed, Probable, Possible, and NoIndicators. Any 
 sign-in makes the account Confirmed. A follow-on persistence action combined with any flagged
 sign-in also makes the account Confirmed.
 
+#### What Confirmed actually asserts
+
+Confirmed is a triage priority, not a finding of abuse. It means the post-validation activity for
+that account matches the activity this attack produces, so the account goes to the front of the
+queue. It does not assert that an intruder used the account, and it says nothing at all about what
+was accessed, read, or taken.
+
+The tier name describes what was confirmed, and what was confirmed is the pattern match, not the
+compromise. Every signal in the Confirmed tier has a benign explanation available:
+
+- A shared egress address puts the legitimate owner and the attacker on the same source address. A
+  corporate VPN concentrator, an office NAT gateway, or a mobile carrier range will do this.
+- A non-browser client string can be the account's own automation, a monitoring job, or a scheduled
+  PowerShell task rather than an adversary.
+- A Resource Owner Password Credentials success can be a legacy line of business application that
+  legitimately uses the flow.
+- A follow-on persistence action can be the user genuinely enrolling a new authenticator, or an
+  administrator resetting the password in response to the incident itself.
+
+Stating that the evidence is consistent with the attack is the strongest claim retained audit data
+supports on its own. Deciding whether the account was actually abused requires an analyst, and in a
+regulatory or contractual context it requires an incident commander and counsel. CredEcho ranks the
+queue. It does not adjudicate it.
+
 The unified audit log carries no autonomous system number and no geolocation, so infrastructure
 novelty falls back to an IPv4 /24 or IPv6 /48 prefix. This is a coarse proxy and it is scored
 accordingly: a large hosting provider or a carrier grade NAT range will place unrelated traffic in
@@ -286,15 +310,44 @@ are encoded rather than trusted, and they render as literal text.
 
 The report carries a sidebar with section and verdict navigation, a verdict summary strip, an
 engagement context strip, a scope and limitations panel, an attacker indicator panel, and one
-expandable card per account. Each expanded card shows the validation error codes with the basis on
-which each was classified, a timeline of the validation event followed by every flagged sign-in and
-follow-on action in chronological order, a table of scored sign-ins, and a table of follow-on
-actions. Filters cover the four verdict tiers and a free-text search across user principal name,
-source address, user agent, and follow-on target object, with a live count of accounts shown. A
-theme toggle follows the system preference on first load and then persists the choice.
+expandable card per account. Filters cover the four verdict tiers and a free-text search across user
+principal name, source address, user agent, and follow-on target object, with a live count of
+accounts shown. A theme toggle follows the system preference on first load and then persists the
+choice.
 
-Three details in that layout exist because their absence made the report read as more complete than
-it was.
+#### Summary in the card, detail in the flyout
+
+An expanded card is a summary, not a dump. It shows the validation error codes with the basis on
+which each was classified, a table of unique source address and client pairings, the follow-on
+actions, and the distinct signals for the account.
+
+The pairing table is the change that keeps the card readable. An account an adversary hammered
+produces hundreds of scored sign-ins that mostly repeat the same address and the same client, and a
+row-per-event table buries the shape of the activity in a list nobody scrolls. One test account
+produced 132 scored sign-ins across nine pairings. The table collapses to one row per address and
+client pairing, carrying the sign-in count, the first and last sighting, the highest tier any sign-in
+in the pairing earned, and the union of their signals.
+
+Three properties of that collapse matter:
+
+- **The counts reconcile.** The sign-in counts across the pairings sum to the account's flagged
+  sign-in total, so the summary can be read as complete rather than sampled.
+- **Severity never drops.** A pairing carries the highest tier any of its sign-ins earned, so
+  collapsing rows cannot lower what a reader sees, and the highest tier sorts first.
+- **Absent values are stated.** Where the audit record carried no address or no user agent, the cell
+  says so rather than rendering empty.
+
+A **View all details** button opens a flyout carrying the exhaustive record: the timeline, every
+individual scored sign-in, and the follow-on actions. Escape, the close button, or a click outside
+dismisses it.
+
+That detail is not fetched or rebuilt. It is authored once into a hidden node inside the card, and
+the flyout renders a copy of that same node, so the card, the flyout, and the printed page cannot
+disagree with each other. The same node is what makes the PDF complete, as described under Print and
+PDF below.
+
+Three further details in the layout exist because their absence made the report read as more complete
+than it was.
 
 **Follow-on actions name their target object.** The table reports the timestamp, operation,
 category, target object, and source address. An operation alone states that something was created
@@ -322,6 +375,12 @@ finding is lost inside a collapsed panel, page breaks are avoided inside a card 
 and dark mode backgrounds are reset to white so the PDF renders on white regardless of the active
 theme.
 
+The detail that the screen hides behind the flyout is printed in full. A reader cannot click a button
+on paper, so the hidden detail node becomes visible for print and the flyout controls disappear:
+the PDF carries the pairing summary and every individual sign-in, and no finding is trapped behind an
+interaction the medium does not support. A print started while the flyout is open closes it first, so
+pagination is never computed against a locked page.
+
 ### Verdict ladder
 
 The same four tiers appear in the summary strip, the filter chips, the sidebar, and the account
@@ -329,7 +388,7 @@ sort order. All four cards render even at a count of zero, so the reader sees th
 
 | Verdict | Color | Meaning |
 | --- | --- | --- |
-| Confirmed | `#dc2626` | Highest confidence of unauthorized access. |
+| Confirmed | `#dc2626` | Post-validation activity matches the attack pattern. Investigate first. Not a finding of compromise. |
 | Probable | `#ea580c` | Anomalous against baseline, short of a direct indicator match. |
 | Possible | `#7c3aed` | Unresolved rather than lesser. Requires analyst triage. |
 | NoIndicators | `#16a34a` | No anomalous post-validation access found within the retained window. |
@@ -338,15 +397,20 @@ Possible is deliberately violet rather than amber. It is not a lesser severity c
 unresolved one. Blue is reserved for the brand accent and is never used for a verdict.
 
 `Docs/Reading-The-Verdicts.md` explains the ladder for executives and non-technical reviewers. It
-covers what a verdict does and does not assert, why No Indicators is not a clean result, the four
-annotations that override the verdict at face value, and the questions worth asking in a review
-meeting. Hand it to the client alongside the report.
+covers what a verdict does and does not assert, why Confirmed is not a compromise ruling, why No
+Indicators is not a clean result, the four annotations that override the verdict at face value, and
+the questions worth asking in a review meeting. Hand it to the client alongside the report.
 
 ## Limitations
 
 - **Read only, by design.** CredEcho performs no remediation. There is no password reset, no token
   revocation, no session invalidation, and no blocking anywhere in this module. Output is
   investigative leads only. Acting on those leads is a separate, deliberate decision.
+- **Confirmed is a priority, not a ruling.** No verdict in this tool determines that an account was
+  abused. Confirmed states that the retained evidence for an account is consistent with the pattern
+  this attack produces, which means investigate it first. It is not a compromise finding, it is not
+  a breach determination, and it must not be reported to a client, a regulator, or an insurer as
+  either. See the earlier discussion of what Confirmed asserts.
 - **The 700016 classification is observed, not documented.** See the confidence discussion above.
 - **Retention bounds everything.** A campaign older than the tenant's audit retention is invisible.
   Phase three exists because directory audit evidence of persistence outlives the sign-in evidence

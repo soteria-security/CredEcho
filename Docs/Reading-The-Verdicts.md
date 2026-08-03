@@ -35,7 +35,7 @@ is that someone then walked in.
 
 | Verdict | Plain reading | What the evidence shows |
 | --- | --- | --- |
-| **Confirmed** | Someone used the account. | Activity after the password was tested came from the same internet address or the same automated tooling the attacker used, or the account was signed into by an automated method a real person does not use, or a persistence change was made alongside suspicious access. |
+| **Confirmed** | Investigate this one first. | Activity after the password was tested matches the pattern this attack produces. It came from the same internet address or the same automated tooling the attacker used, or the account was signed into by an automated method a real person does not use, or a persistence change was made alongside suspicious access. |
 | **Probable** | Something is wrong with this account. | Activity after the password was tested does not match how this account normally behaves, but it does not carry the attacker's exact fingerprints. Examples include access from an unfamiliar part of the internet without multifactor authentication, access flagged as risky by Microsoft, or access using outdated software that bypasses modern protections. |
 | **Possible** | Not resolved. Someone has to look. | There is one unexplained detail, and the available evidence cannot settle it either way. This is not a lesser finding. It is an open question. |
 | **No Indicators** | No evidence of misuse was found in the records that still exist. | Nothing anomalous was found after the password was tested, within the period the logs cover. |
@@ -46,7 +46,48 @@ turn out to be the worst one in the report once someone looks at it.
 
 ---
 
-## The most important point on this page
+## What Confirmed does not mean
+
+**Confirmed is not a ruling that the account was compromised.**
+
+It is a priority. Confirmed means the activity on the account after the password was tested matches
+the activity this kind of attack produces, so this is the account to look at first. What has been
+confirmed is the match to the attack pattern. Whether the account was actually misused is the
+question the investigation answers, and this report does not answer it.
+
+The distinction is not a technicality. Every piece of evidence behind a Confirmed verdict has an
+innocent explanation that is entirely possible:
+
+- **Shared internet addresses.** The report matches on the address the attacker used. If the office
+  network, the corporate virtual private network, or a mobile carrier puts many people behind one
+  shared address, the legitimate owner of the account can appear at the same address as the attacker
+  with no connection between them.
+- **Automated sign-ins.** The report flags sign-ins made by software rather than a person at a
+  keyboard. That software may be the organization's own script, a monitoring tool, or a scheduled job.
+- **Older sign-in methods.** The report flags an older authentication method that attackers favor. A
+  legitimate older business application may use the same method.
+- **Security changes made afterward.** The report flags actions such as registering a new
+  authentication app. The account owner may have done that themselves, or the help desk may have done
+  it in response to this very incident.
+
+An analyst can usually resolve each of these quickly once they look at the account. Until someone
+looks, the verdict says exactly what it says: this account is the highest priority to examine, and
+the evidence is consistent with the attack.
+
+Two consequences worth stating plainly.
+
+**Do not report a Confirmed count as a number of compromised accounts.** It is a number of accounts
+requiring urgent investigation. Those are different figures, and the second is normally larger than
+the first.
+
+**Do not treat Confirmed as a breach determination.** Whether an incident triggers notification
+obligations under contracts, regulation, or an insurance policy is a decision for the incident
+commander and counsel, informed by the completed investigation. It is not something a tool decides
+from audit logs.
+
+---
+
+## What No Indicators does not mean
 
 **No Indicators does not mean safe.**
 
@@ -64,10 +105,10 @@ password reset and a session revocation.
 ## What a verdict is not
 
 - **It is not a legal or forensic determination.** The report produces investigative leads. A
-  Confirmed verdict states that the retained evidence strongly supports unauthorized access. It does
-  not constitute proof, and it is not on its own a breach determination for regulatory or contractual
-  notification purposes. That decision belongs to counsel and the incident commander, informed by
-  this report and other evidence.
+  Confirmed verdict states that the retained evidence for an account matches the pattern this attack
+  produces. It does not constitute proof of unauthorized access, and it is not on its own a breach
+  determination for regulatory or contractual notification purposes. That decision belongs to counsel
+  and the incident commander, informed by this report and other evidence.
 - **It is not a measure of damage.** The verdict describes access, not what the intruder did once
   inside, what was read, what was copied, or whether anything was taken. Answering that requires
   separate work.
@@ -135,7 +176,7 @@ complete.
 
 | Verdict | Urgency | Typical next step |
 | --- | --- | --- |
-| **Confirmed** | Immediate | Treat as an active intrusion. Reset the password, revoke sessions, and open a full investigation of the account, including mailbox rules, data access, and anything the account could reach. |
+| **Confirmed** | Immediate | Treat as a possible active intrusion until an analyst rules it out. Reset the password, revoke sessions, and open a full investigation of the account, including mailbox rules, data access, and anything the account could reach. |
 | **Probable** | Same day | Reset the password, revoke sessions, and assign an analyst to resolve the activity to either a legitimate explanation, such as travel or a new device, or an intrusion. |
 | **Possible** | Same week | Reset the password, revoke sessions, and review. Expect a portion of these to resolve as benign and a portion to escalate. |
 | **No Indicators** | Same week | Reset the password and revoke sessions. The credential is compromised even though no misuse was observed. |
@@ -152,13 +193,16 @@ nothing, and blocks nothing. Every action above is a deliberate human decision m
 2. Which listed accounts have access to regulated data, financial systems, or customer information?
 3. Have all listed accounts had passwords reset and sessions revoked, including the No Indicators
    ones?
-4. How many accounts carry the "novelty could not be assessed" note, and who is reviewing them?
-5. Where did the exposed passwords originate, and does that source suggest other accounts not visible
+4. For each Confirmed account, has an analyst examined it, and did they find actual misuse or an
+   innocent explanation? Until that question is answered per account, the Confirmed count is a
+   workload figure and not a damage figure.
+5. How many accounts carry the "novelty could not be assessed" note, and who is reviewing them?
+6. Where did the exposed passwords originate, and does that source suggest other accounts not visible
    here?
-6. Does the retention window cover the full suspected duration of the campaign, and if not, what is
+7. Does the retention window cover the full suspected duration of the campaign, and if not, what is
    the gap?
-7. What would have detected this earlier, and what would it cost to put that in place?
-8. Does anything in this report trigger a notification obligation under our contracts or regulatory
+8. What would have detected this earlier, and what would it cost to put that in place?
+9. Does anything in this report trigger a notification obligation under our contracts or regulatory
    obligations, and who is making that call?
 
 ---
@@ -169,8 +213,10 @@ An attacker used a quiet technique to confirm which of a set of stolen passwords
 still work. Because the technique never completes a sign-in, nothing alerted at the time. This report
 lists every account whose password the attacker confirmed as valid, and grades how much evidence
 exists that each account was then actually used by someone other than its owner. Confirmed means the
-evidence places an intruder in the account. Probable means the account behaved abnormally afterward.
-Possible means the question is open and an analyst has to resolve it. No Indicators means no misuse
-was found in the records that still exist, which is not the same as safe: the password is compromised
-either way. Every account in this report needs its password reset and its sessions revoked. The
-verdict sets the investigation priority, not whether that action is required.
+activity on that account matches what this attack looks like, so it is the first one to investigate.
+It is not a ruling that the account was compromised, and the Confirmed count is a measure of urgent
+work rather than a count of compromised accounts. Probable means the account behaved abnormally
+afterward. Possible means the question is open and an analyst has to resolve it. No Indicators means
+no misuse was found in the records that still exist, which is not the same as safe: the password is
+compromised either way. Every account in this report needs its password reset and its sessions
+revoked. The verdict sets the investigation priority, not whether that action is required.

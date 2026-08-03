@@ -173,6 +173,70 @@ function New-CredEchoHtmlReport {
                 })
         }
 
+        # Unique source address and client pairings, aggregated from the scored sign-ins. An account
+        # that an adversary hammered produces hundreds of rows that all say the same thing, and the
+        # shape of the activity disappears into a list nobody scrolls. Collapsing to one row per
+        # address and client answers the first question an analyst asks, which machines and which
+        # clients touched this account, and the per-event record moves behind the detail flyout.
+        $pairingTierRank = @{ 'Confirmed' = 3; 'Probable' = 2; 'Possible' = 1 }
+        $pairing = [ordered]@{}
+        foreach ($signIn in $accountFlagged) {
+            $pairIp = [string] $signIn.IpAddress
+            $pairAgent = [string] $signIn.UserAgent
+            # Unit separator, because neither an address nor a user agent can contain it.
+            $pairKey = "$($pairIp)$([char]31)$($pairAgent)"
+            $stamp = ConvertTo-CredEchoDateTime $signIn.TimeStamp
+
+            if (-not $pairing.Contains($pairKey)) {
+                $pairing[$pairKey] = [pscustomobject]@{
+                    IpAddress = $pairIp
+                    IpPrefix  = [string] $signIn.IpPrefix
+                    UserAgent = $pairAgent
+                    Hits      = 0
+                    First     = $null
+                    Last      = $null
+                    Rank      = 0
+                    Tier      = ''
+                    Signal    = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+                    Enriched  = $false
+                }
+            }
+
+            $entry = $pairing[$pairKey]
+            $entry.Hits++
+            if ($null -ne $stamp) {
+                if ($null -eq $entry.First -or $stamp -lt $entry.First) { $entry.First = $stamp }
+                if ($null -eq $entry.Last -or $stamp -gt $entry.Last) { $entry.Last = $stamp }
+            }
+            # The pairing carries the highest tier any of its sign-ins earned, so collapsing rows
+            # can never lower the severity a reader sees.
+            $pairTier = [string] $signIn.Tier
+            if ($pairingTierRank.ContainsKey($pairTier) -and $pairingTierRank[$pairTier] -gt $entry.Rank) {
+                $entry.Rank = $pairingTierRank[$pairTier]
+                $entry.Tier = $pairTier
+            }
+            foreach ($pairSignal in @($signIn.Signal)) {
+                if (-not [string]::IsNullOrWhiteSpace([string] $pairSignal)) { [void] $entry.Signal.Add([string] $pairSignal) }
+            }
+            if ($signIn.Enriched) { $entry.Enriched = $true }
+        }
+
+        $sourceClientRow = @(@($pairing.Values) |
+            Sort-Object -Property @{ Expression = 'Rank'; Descending = $true }, @{ Expression = 'Hits'; Descending = $true }, @{ Expression = 'First' } |
+            ForEach-Object {
+                [pscustomobject]@{
+                    IpAddress   = Protect-CredEchoHtmlText $(if ([string]::IsNullOrWhiteSpace($_.IpAddress)) { 'not recorded' } else { $_.IpAddress })
+                    IpPrefix    = Protect-CredEchoHtmlText $_.IpPrefix
+                    UserAgent   = Protect-CredEchoHtmlText $(if ([string]::IsNullOrWhiteSpace($_.UserAgent)) { 'not recorded' } else { $_.UserAgent })
+                    SignInCount = [int] $_.Hits
+                    FirstSeen   = Protect-CredEchoHtmlText $(if ($null -ne $_.First) { $_.First.ToString('yyyy-MM-dd HH:mm:ss') } else { '' })
+                    LastSeen    = Protect-CredEchoHtmlText $(if ($null -ne $_.Last) { $_.Last.ToString('yyyy-MM-dd HH:mm:ss') } else { '' })
+                    Tier        = Protect-CredEchoHtmlText $_.Tier
+                    Signal      = @(@($_.Signal) | Sort-Object | ForEach-Object { Protect-CredEchoHtmlText $_ })
+                    Enriched    = [bool] $_.Enriched
+                }
+            })
+
         $followOnRow = New-Object 'System.Collections.Generic.List[psobject]'
         foreach ($action in ($accountFollowOn | Sort-Object -Property @{ Expression = { ConvertTo-CredEchoDateTime $_.TimeStamp } })) {
             $stamp = ConvertTo-CredEchoDateTime $action.TimeStamp
@@ -262,6 +326,8 @@ function New-CredEchoHtmlReport {
                     })
                 DistinctSignal       = @(@($account.DistinctSignal) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
                 SignIn               = $signInRow.ToArray()
+                SourceClient         = $sourceClientRow
+                SourceClientCount    = @($sourceClientRow).Count
                 FollowOn             = $followOnRow.ToArray()
                 Timeline             = $timeline
                 SearchBlob           = Protect-CredEchoHtmlText $blob
@@ -596,6 +662,55 @@ html.dark .timeline .tl-detail { color: #9aa3ba; }
 .notice { font-size: 0.8125rem; padding: 0.5rem 0.75rem; border-radius: 6px; background: #f4f6fa; border-left: 3px solid #7c3aed; }
 html.dark .notice { background: #232742; }
 
+/* ---------- detail flyout ----------
+   The exhaustive per-account record stays in the DOM inside .full-detail, hidden on screen and
+   revealed for print. The flyout renders a copy of that same node, so the screen stays short, the
+   PDF stays complete, and there is only one place the detail is authored. */
+.full-detail { display: none; }
+.detail-actions {
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  margin: 0.65rem 0 0.25rem;
+}
+.view-all {
+  font: inherit; font-size: 0.8125rem; font-weight: 600; cursor: pointer;
+  padding: 0.4rem 0.9rem; border-radius: 6px; border: 1px solid #1e5bb8;
+  background: #1e5bb8; color: #fff;
+}
+.view-all:hover { background: #17498f; }
+html.dark .view-all { border-color: #2563eb; background: #2563eb; }
+html.dark .view-all:hover { background: #1d4ed8; }
+
+#flyout-scrim {
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0;
+  background: rgba(15, 20, 35, 0.45); z-index: 40;
+}
+#flyout {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: 92vw; max-width: 940px; z-index: 41;
+  display: flex; flex-direction: column;
+  background: #f7f8fb; box-shadow: -8px 0 28px rgba(15, 20, 35, 0.28);
+}
+html.dark #flyout { background: #12141f; }
+/* An id selector outranks the user agent [hidden] rule, so the closed state is stated explicitly. */
+#flyout[hidden], #flyout-scrim[hidden] { display: none; }
+.flyout-head {
+  display: flex; align-items: center; gap: 0.6rem; flex: 0 0 auto;
+  padding: 0.9rem 1.25rem; background: #fff; border-bottom: 1px solid #e3e8f2;
+}
+html.dark .flyout-head { background: #1a1d2e; border-bottom-color: #2a2f45; }
+#flyout-title { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex-wrap: wrap; }
+#flyout-title .upn { font-weight: 600; font-family: monospace; font-size: 0.875rem; word-break: break-all; }
+#flyout-close {
+  margin-left: auto; flex: 0 0 auto; font-size: 1.5rem; line-height: 1;
+  background: none; border: 0; cursor: pointer; color: #5b6478; padding: 0 0.3rem;
+}
+#flyout-close:hover { color: #1f2430; }
+html.dark #flyout-close { color: #9aa3ba; }
+html.dark #flyout-close:hover { color: #e4e7f0; }
+.flyout-body { flex: 1 1 auto; overflow-y: auto; padding: 1rem 1.25rem 2.5rem; }
+.flyout-body .subhead:first-child { margin-top: 0; }
+body.flyout-open { overflow: hidden; }
+
 /* ---------- footer ---------- */
 .brand-footer {
   background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -630,6 +745,11 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
   .print-brand .tagline { font-size: 0.8125rem; color: #33415c; }
   .export-bar, #theme-toggle, .filter-bar, .account-toggle, .chev { display: none !important; }
   .account-body { display: block !important; }
+  /* The exhaustive record is hidden on screen and printed in full, so the PDF loses no finding to a
+     panel the reader cannot open on paper. */
+  .full-detail { display: block !important; }
+  .detail-actions, #flyout, #flyout-scrim { display: none !important; }
+  body.flyout-open { overflow: visible !important; }
   .account-head { cursor: default; }
   .account, .card, .page-header, .brand-footer { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; border: 1px solid #d5dbe8 !important; }
   section { break-inside: avoid; page-break-inside: avoid; }
@@ -763,6 +883,15 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     <div class="stamp" id="footer-stamp"></div>
   </footer>
 </main>
+
+<div id="flyout-scrim" hidden></div>
+<aside id="flyout" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="flyout-title">
+  <header class="flyout-head">
+    <div id="flyout-title"></div>
+    <button type="button" id="flyout-close" aria-label="Close details">&#215;</button>
+  </header>
+  <div class="flyout-body" id="flyout-body"></div>
+</aside>
 
 <script id="report-data">var REPORT_DATA = __CREDECHO_REPORT_DATA__;</script>
 <script>
@@ -981,6 +1110,31 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     return h + '</tbody></table>';
   }
 
+  /* One row per unique source address and client. The count column is what tells the reader that a
+     single row stands for many events, so it is never omitted. */
+  function sourceClientTable(source) {
+    var rows = list(source);
+    if (!rows.length) {
+      return '<p class="muted">No post-validation sign-in earned a signal for this account, so there is no source or client pairing to summarise.</p>';
+    }
+    var h = '<table><thead><tr>' +
+      '<th>Source address</th><th>User agent</th><th class="num">Sign-ins</th>' +
+      '<th>First seen (UTC)</th><th>Last seen (UTC)</th><th>Highest tier</th><th>Signals</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      h += '<tr>' +
+        '<td class="mono">' + r.IpAddress + '<br><span class="muted">' + r.IpPrefix + '</span></td>' +
+        '<td class="mono">' + r.UserAgent + '</td>' +
+        '<td class="num"><strong>' + r.SignInCount + '</strong></td>' +
+        '<td class="num mono">' + r.FirstSeen + '</td>' +
+        '<td class="num mono">' + r.LastSeen + '</td>' +
+        '<td><span class="pill p-' + cls(r.Tier) + '">' + r.Tier + '</span></td>' +
+        '<td>' + signalTags(r.Signal) + '</td>' +
+        '</tr>';
+    });
+    return h + '</tbody></table>';
+  }
+
   function followOnTable(source) {
     var rows = list(source);
     if (!rows.length) {
@@ -1029,6 +1183,10 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       ? '<div class="notice">The validation timestamp was not derivable for this account, so the start of the search window was used as the anchor. Elapsed times are measured from that assumed anchor.</div>'
       : '';
 
+    var pairCount = a.SourceClientCount || list(a.SourceClient).length;
+    var detailSummary = pairCount + (pairCount === 1 ? ' pairing across ' : ' pairings across ') +
+      a.FlaggedSignInCount + (a.FlaggedSignInCount === 1 ? ' scored sign-in' : ' scored sign-ins');
+
     return '<article class="card account" data-verdict="' + a.Verdict + '" data-search="' + a.SearchBlob + '">' +
       '<div class="account-head">' +
         '<span class="chev account-toggle">&#9656;</span>' +
@@ -1044,10 +1202,19 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       '<div class="account-body">' +
         assumedNote + baselineNote +
         '<div class="subhead">Validation error codes</div>' + errorCodeTags(a.ValidationErrorCode) +
-        '<div class="subhead">Timeline</div>' + timelineList(a.Timeline) +
-        '<div class="subhead">Scored sign-ins</div>' + signInTable(a.SignIn) +
+        '<div class="subhead">Unique source and client pairings</div>' + sourceClientTable(a.SourceClient) +
+        '<div class="detail-actions">' +
+          '<button type="button" class="view-all">View all details</button>' +
+          '<span class="muted">' + detailSummary + '. The timeline and every individual sign-in are in the detail view.</span>' +
+        '</div>' +
         '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn) +
         '<div class="subhead">Distinct signals for this account</div>' + signalTags(a.DistinctSignal) +
+        /* Hidden on screen, printed in full, and cloned into the flyout on demand. */
+        '<div class="full-detail">' +
+          '<div class="subhead">Timeline</div>' + timelineList(a.Timeline) +
+          '<div class="subhead">Every scored sign-in</div>' + signInTable(a.SignIn) +
+          '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn) +
+        '</div>' +
       '</div>' +
       '</article>';
   }
@@ -1076,6 +1243,62 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
   }
   el('expand-all').addEventListener('click', function () { setAll(true); });
   el('collapse-all').addEventListener('click', function () { setAll(false); });
+
+  /* ---------- detail flyout ----------
+     The flyout renders a copy of the card's own .full-detail node rather than re-deriving the
+     markup, so the screen view, the flyout, and the printed page can never disagree. */
+  var flyout = el('flyout');
+  var flyoutScrim = el('flyout-scrim');
+  var flyoutBody = el('flyout-body');
+  var flyoutTitle = el('flyout-title');
+  var flyoutReturnFocus = null;
+
+  function openFlyout(card, trigger) {
+    var detail = card.querySelector('.full-detail');
+    var upn = card.querySelector('.account-head .upn');
+    var pill = card.querySelector('.account-head .pill');
+
+    flyoutTitle.innerHTML = (upn ? upn.outerHTML : '') + (pill ? pill.outerHTML : '');
+    flyoutBody.innerHTML = detail ? detail.innerHTML : '<p class="muted">No detail is available for this account.</p>';
+    flyoutBody.scrollTop = 0;
+
+    flyoutScrim.hidden = false;
+    flyout.hidden = false;
+    flyout.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('flyout-open');
+
+    flyoutReturnFocus = trigger || null;
+    el('flyout-close').focus();
+  }
+
+  function closeFlyout() {
+    if (flyout.hidden) { return; }
+    flyout.hidden = true;
+    flyoutScrim.hidden = true;
+    flyout.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('flyout-open');
+    flyoutBody.innerHTML = '';
+    flyoutTitle.innerHTML = '';
+    if (flyoutReturnFocus) { flyoutReturnFocus.focus(); flyoutReturnFocus = null; }
+  }
+
+  /* Delegated, because the account list is rendered as one innerHTML assignment. */
+  el('account-list').addEventListener('click', function (e) {
+    var trigger = e.target.closest ? e.target.closest('.view-all') : null;
+    if (!trigger) { return; }
+    e.preventDefault();
+    e.stopPropagation();
+    var card = trigger.closest('.account');
+    if (card) { openFlyout(card, trigger); }
+  });
+
+  el('flyout-close').addEventListener('click', closeFlyout);
+  flyoutScrim.addEventListener('click', closeFlyout);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' || e.keyCode === 27) { closeFlyout(); }
+  });
+  /* A print started with the flyout open would otherwise paginate against a locked body. */
+  window.addEventListener('beforeprint', closeFlyout);
 
   /* ---------- filters ---------- */
   el('verdict-chips').innerHTML = LADDER.map(function (tier) {

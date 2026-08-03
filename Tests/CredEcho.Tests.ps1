@@ -1270,6 +1270,166 @@ Describe 'HTML report renderer' {
         }
     }
 
+    Context 'Unique source and client pairings' {
+
+        BeforeAll {
+            # A separate fixture, because the shared one carries one sign-in per account and the
+            # behaviour under test only appears once a pairing repeats. Eight sign-ins across three
+            # distinct address and client pairings, deliberately out of chronological order, with the
+            # highest tier sitting on a middle row so a naive first-wins would pick the wrong one.
+            $agentChrome = 'Mozilla/5.0 (Windows NT 10.0) Chrome/146.0.0.0'
+            $agentBroker = 'Windows-AzureAD-Authentication-Provider/1.0'
+
+            $manyFlagged = @(
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; TimeStamp = '2026-06-20T10:00:00Z'
+                    Tier = 'Possible'; Signal = @('FirstSeenSourceAddressWithMultifactor:Possible')
+                    IpAddress = '203.0.113.9'; IpPrefix = '203.0.113.0/24'; UserAgent = $agentBroker
+                    ApplicationId = 'dddd4444-4444-4444-4444-444444444444'; RecordId = 'n1'; ClientAppUsed = 'Browser'
+                    ConditionalAccessStatus = 'success'; AuthenticationRequirement = 'multiFactorAuthentication'
+                    AuthenticationProtocol = ''; RiskLevelDuringSignIn = ''; AutonomousSystemNumber = $null; Enriched = $true }
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; TimeStamp = '2026-06-18T08:00:00Z'
+                    Tier = 'Possible'; Signal = @('FirstSeenSourceAddressWithMultifactor:Possible')
+                    IpAddress = '203.0.113.9'; IpPrefix = '203.0.113.0/24'; UserAgent = $agentBroker
+                    ApplicationId = 'dddd4444-4444-4444-4444-444444444444'; RecordId = 'n2'; ClientAppUsed = 'Browser'
+                    ConditionalAccessStatus = 'success'; AuthenticationRequirement = 'multiFactorAuthentication'
+                    AuthenticationProtocol = ''; RiskLevelDuringSignIn = ''; AutonomousSystemNumber = $null; Enriched = $true }
+                # Same address, different client. This must not collapse into the rows above.
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; TimeStamp = '2026-06-19T09:00:00Z'
+                    Tier = 'Probable'; Signal = @('LegacyClientApplication:Probable')
+                    IpAddress = '203.0.113.9'; IpPrefix = '203.0.113.0/24'; UserAgent = $agentChrome
+                    ApplicationId = 'dddd4444-4444-4444-4444-444444444444'; RecordId = 'n3'; ClientAppUsed = 'Other clients'
+                    ConditionalAccessStatus = 'notApplied'; AuthenticationRequirement = 'singleFactorAuthentication'
+                    AuthenticationProtocol = ''; RiskLevelDuringSignIn = ''; AutonomousSystemNumber = $null; Enriched = $true }
+                # Same client, different address. Also must stay separate.
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; TimeStamp = '2026-06-21T07:00:00Z'
+                    Tier = 'Confirmed'; Signal = @('SourceAddressSeenInValidationActivity:Confirmed')
+                    IpAddress = '185.220.101.44'; IpPrefix = '185.220.101.0/24'; UserAgent = $agentBroker
+                    ApplicationId = 'dddd4444-4444-4444-4444-444444444444'; RecordId = 'n4'; ClientAppUsed = 'Other clients'
+                    ConditionalAccessStatus = 'notApplied'; AuthenticationRequirement = 'singleFactorAuthentication'
+                    AuthenticationProtocol = 'ropc'; RiskLevelDuringSignIn = 'high'; AutonomousSystemNumber = $null; Enriched = $true }
+                # A second signal on an existing pairing, so the union can be checked.
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; TimeStamp = '2026-06-22T07:30:00Z'
+                    Tier = 'Confirmed'; Signal = @('ResourceOwnerPasswordCredentialsGrantSucceeded:Confirmed')
+                    IpAddress = '185.220.101.44'; IpPrefix = '185.220.101.0/24'; UserAgent = $agentBroker
+                    ApplicationId = 'dddd4444-4444-4444-4444-444444444444'; RecordId = 'n5'; ClientAppUsed = 'Other clients'
+                    ConditionalAccessStatus = 'notApplied'; AuthenticationRequirement = 'singleFactorAuthentication'
+                    AuthenticationProtocol = 'ropc'; RiskLevelDuringSignIn = 'high'; AutonomousSystemNumber = $null; Enriched = $true }
+                # An unrecorded address and client. The pairing has to survive an empty key.
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; TimeStamp = '2026-06-23T07:30:00Z'
+                    Tier = 'Possible'; Signal = @('NoveltyCouldNotBeAssessed:Possible')
+                    IpAddress = ''; IpPrefix = ''; UserAgent = ''
+                    ApplicationId = ''; RecordId = 'n6'; ClientAppUsed = ''
+                    ConditionalAccessStatus = ''; AuthenticationRequirement = ''; AuthenticationProtocol = ''
+                    RiskLevelDuringSignIn = ''; AutonomousSystemNumber = $null; Enriched = $false }
+            )
+
+            $noisyVerdict = @(
+                [pscustomobject]@{ UserPrincipalName = 'noisy@contoso.com'; Verdict = 'Confirmed'
+                    ConfirmedSignalCount = 2; ProbableSignalCount = 1; PossibleSignalCount = 3
+                    DistinctSignal = @('SourceAddressSeenInValidationActivity:Confirmed')
+                    FirstValidation = '2026-06-10T02:00:00Z'; LastValidation = '2026-06-10T02:00:00Z'
+                    ValidationErrorCode = @('700016'); ValidationSourceAddress = @('185.220.101.44')
+                    ValidationTimestampAssumed = $false; PostValidationSignInCount = 40; FlaggedSignInCount = 6
+                    FollowOnActionCount = 0; BaselineAssessed = $true; BaselineSignInCount = 30
+                    NoveltyAssessment = 'Assessed' }
+            )
+
+            $noisyFixture = [pscustomobject]@{
+                Summary         = $script:Fixture.Summary
+                AccountVerdict  = $noisyVerdict
+                ValidationEvent = @($script:Fixture.ValidationEvent)
+                FlaggedSignIn   = $manyFlagged
+                FollowOnAction  = @()
+            }
+
+            $script:PairPath = Join-Path $TestDrive 'pairings\TriageReport.html'
+            New-Item -Path (Split-Path $script:PairPath -Parent) -ItemType Directory -Force | Out-Null
+            InModuleScope CredEcho -Parameters @{ Fixture = $noisyFixture; Target = $script:PairPath } {
+                New-CredEchoHtmlReport -TriageResult $Fixture -Path $Target | Out-Null
+            }
+            $script:PairHtml = Get-Content -LiteralPath $script:PairPath -Raw
+            $script:PairData = ([regex]::Match($script:PairHtml, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $script:NoisyAccount = @($script:PairData.Account)[0]
+        }
+
+        It 'collapses repeated sign-ins into one row per address and client' {
+            # Six sign-ins, four distinct pairings: the broker at 203.0.113.9, Chrome at the same
+            # address, the broker at the attacker address, and the unrecorded pair.
+            @($script:NoisyAccount.SignIn).Count | Should -Be 6
+            $script:NoisyAccount.SourceClientCount | Should -Be 4
+            @($script:NoisyAccount.SourceClient).Count | Should -Be 4
+        }
+
+        It 'accounts for every sign-in exactly once across the pairings' {
+            $total = (@($script:NoisyAccount.SourceClient) | Measure-Object -Property SignInCount -Sum).Sum
+            $total | Should -Be 6
+            $total | Should -Be $script:NoisyAccount.FlaggedSignInCount
+        }
+
+        It 'keeps a shared address with different clients on separate rows' {
+            $atAddress = @($script:NoisyAccount.SourceClient | Where-Object { $_.IpAddress -eq '203.0.113.9' })
+            $atAddress.Count | Should -Be 2
+            @($atAddress.UserAgent | Sort-Object -Unique).Count | Should -Be 2
+        }
+
+        It 'carries the highest tier any sign-in in the pairing earned' {
+            $attacker = @($script:NoisyAccount.SourceClient | Where-Object { $_.IpAddress -eq '185.220.101.44' })[0]
+            $attacker.Tier | Should -Be 'Confirmed'
+            $attacker.SignInCount | Should -Be 2
+        }
+
+        It 'unions the signals of every sign-in in the pairing' {
+            $attacker = @($script:NoisyAccount.SourceClient | Where-Object { $_.IpAddress -eq '185.220.101.44' })[0]
+            @($attacker.Signal).Count | Should -Be 2
+            $attacker.Signal | Should -Contain 'SourceAddressSeenInValidationActivity:Confirmed'
+            $attacker.Signal | Should -Contain 'ResourceOwnerPasswordCredentialsGrantSucceeded:Confirmed'
+        }
+
+        It 'reports the true first and last sighting regardless of input order' {
+            $broker = @($script:NoisyAccount.SourceClient | Where-Object { $_.IpAddress -eq '203.0.113.9' -and $_.UserAgent -like '*AzureAD*' })[0]
+            $broker.FirstSeen | Should -Be '2026-06-18 08:00:00'
+            $broker.LastSeen | Should -Be '2026-06-20 10:00:00'
+        }
+
+        It 'sorts the highest tier first so the worst pairing is never below the fold' {
+            @($script:NoisyAccount.SourceClient)[0].Tier | Should -Be 'Confirmed'
+        }
+
+        It 'states an absent address and client rather than rendering an empty cell' {
+            $blank = @($script:NoisyAccount.SourceClient | Where-Object { $_.SignInCount -eq 1 -and $_.Tier -eq 'Possible' })
+            $blank.Count | Should -Be 1
+            $blank[0].IpAddress | Should -Be 'not recorded'
+            $blank[0].UserAgent | Should -Be 'not recorded'
+        }
+
+        It 'shows the pairing summary in the card and moves the per-event record behind the flyout' {
+            $script:PairHtml | Should -BeLike '*Unique source and client pairings*'
+            $script:PairHtml | Should -BeLike '*class="view-all"*'
+            $script:PairHtml | Should -BeLike '*Every scored sign-in*'
+        }
+
+        It 'ships a flyout that is closed until asked for' {
+            $script:PairHtml | Should -BeLike '*<aside id="flyout" hidden*'
+            $script:PairHtml | Should -BeLike '*<div id="flyout-scrim" hidden>*'
+            # An id selector beats the user agent [hidden] rule, so the closed state is explicit.
+            $script:PairHtml | Should -BeLike '*#flyout[[]hidden], #flyout-scrim[[]hidden] { display: none; }*'
+        }
+
+        It 'prints the exhaustive record even though the screen hides it' {
+            $script:PairHtml | Should -BeLike '*.full-detail { display: none; }*'
+            $script:PairHtml | Should -BeLike '*.full-detail { display: block !important; }*'
+            $script:PairHtml | Should -BeLike '*.detail-actions, #flyout, #flyout-scrim { display: none !important; }*'
+        }
+
+        It 'closes the flyout before printing so pagination is not locked' {
+            $script:PairHtml | Should -BeLike "*addEventListener('beforeprint', closeFlyout)*"
+        }
+
+        It 'keeps the flyout free of external resources' {
+            $script:PairHtml | Should -Not -Match '(?i)<(link|img|iframe|object|embed)\b'
+        }
+    }
+
     Context 'New-CredEchoReport round-trip' {
 
         BeforeAll {

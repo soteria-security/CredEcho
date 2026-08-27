@@ -504,6 +504,4 @@ request.
 
 Copyright (c) 2026 Soteria LLC. All rights reserved.
 
-[LICENSE]
-
-A license has not been selected. See the `LICENSE` file.
+MIT License

@@ -85,6 +85,16 @@ function ConvertFrom-CredEchoLogonRecord {
         $errorName = $PostPasswordError[$errorCode]
         if ($null -eq $errorName) { $errorName = $UsernameOracleError[$errorCode] }
 
+        # A post-password code with no entry in the rating table is reported as Unrated rather
+        # than as an empty value. Every code CredEcho ships is rated, so this only fires for a
+        # code an analyst added through AdditionalPostPasswordErrorCode without supplying a
+        # rating for it. An empty value in that position reads as a rating that failed to
+        # render; Unrated says the classification is the analyst's and CredEcho does not vouch
+        # for it. Codes outside the post-password class stay blank, because the rating describes
+        # how far a post-password classification can be defended and means nothing elsewhere.
+        $confidence = $ErrorConfidence[$errorCode]
+        if ($null -eq $confidence -and $errorClass -eq 'PostPassword') { $confidence = 'Unrated' }
+
         $timestamp = $null
         if ($null -ne $Record['createdDateTime']) {
             $timestamp = ([datetime] $Record['createdDateTime']).ToUniversalTime()
@@ -109,7 +119,7 @@ function ConvertFrom-CredEchoLogonRecord {
             ErrorCode          = $errorCode
             ErrorClass         = $errorClass
             ErrorName          = $errorName
-            ErrorConfidence    = $ErrorConfidence[$errorCode]
+            ErrorConfidence    = $confidence
             LogonError         = [string] $auditData['LogonError']
             IpAddress          = $ipAddress
             IpPrefix           = Get-CredEchoIpPrefix -IpAddress $ipAddress

@@ -185,6 +185,53 @@ Describe 'Get-CredEchoIpPrefix' {
     }
 }
 
+Describe 'Join-CredEchoErrorCodeTable' {
+
+    It 'keeps every entry from both sides' {
+        InModuleScope CredEcho {
+            $merged = Join-CredEchoErrorCodeTable -Base @{ '700016' = 'A' } -Addition @{ '50072' = 'B' }
+            $merged.Count | Should -Be 2
+            $merged['700016'] | Should -Be 'A'
+            $merged['50072'] | Should -Be 'B'
+        }
+    }
+
+    It 'lets the addition win on a shared key, so one entry can be corrected without restating the rest' {
+        InModuleScope CredEcho {
+            $merged = Join-CredEchoErrorCodeTable -Base @{ '50055' = 'Old'; '53003' = 'Kept' } -Addition @{ '50055' = 'New' }
+            $merged['50055'] | Should -Be 'New'
+            $merged['53003'] | Should -Be 'Kept'
+        }
+    }
+
+    It 'casts a numeric key to string so an inline table still matches the record' {
+        InModuleScope CredEcho {
+            # An analyst writing @{ 50072 = '...' } produces an integer key. The error code read
+            # off an audit record is always a string, so without the cast the entry never matches.
+            $merged = Join-CredEchoErrorCodeTable -Base @{} -Addition @{ 50072 = 'Interrupt' }
+            $merged['50072'] | Should -Be 'Interrupt'
+        }
+    }
+
+    It 'does not mutate either side' {
+        InModuleScope CredEcho {
+            $base = @{ '700016' = 'A' }
+            $addition = @{ '50072' = 'B' }
+            [void] (Join-CredEchoErrorCodeTable -Base $base -Addition $addition)
+            $base.Count | Should -Be 1
+            $addition.Count | Should -Be 1
+        }
+    }
+
+    It 'treats a null side as contributing nothing rather than throwing' {
+        InModuleScope CredEcho {
+            (Join-CredEchoErrorCodeTable -Base @{ '700016' = 'A' } -Addition $null).Count | Should -Be 1
+            (Join-CredEchoErrorCodeTable -Base $null -Addition @{ '50072' = 'B' }).Count | Should -Be 1
+            (Join-CredEchoErrorCodeTable -Base $null -Addition $null).Count | Should -Be 0
+        }
+    }
+}
+
 Describe 'ConvertFrom-CredEchoLogonRecord error code classification' {
 
     It 'classifies post-password code <Code> as PostPassword' -ForEach @(
@@ -239,6 +286,19 @@ Describe 'ConvertFrom-CredEchoLogonRecord error code classification' {
             (ConvertFrom-CredEchoLogonRecord -Record (& $build '53003')).ErrorConfidence | Should -Be 'Documented'
             (ConvertFrom-CredEchoLogonRecord -Record (& $build '700016')).ErrorConfidence | Should -Be 'Observed'
             (ConvertFrom-CredEchoLogonRecord -Record (& $build '50055')).ErrorConfidence | Should -Be 'Ambiguous'
+
+            # A post-password code with no rating is the shape an analyst produces by extending
+            # the table without establishing a basis. It reports Unrated, because an empty value
+            # in that position reads as a rating that failed to render.
+            $unrated = ConvertFrom-CredEchoLogonRecord -Record (& $build '50072') `
+                -PostPasswordError @{ '50072' = 'UserStrongAuthEnrollmentRequiredInterrupt' }
+            $unrated.ErrorClass | Should -Be 'PostPassword'
+            $unrated.ErrorConfidence | Should -Be 'Unrated'
+
+            # The rating describes how far a post-password classification can be defended, so it
+            # stays empty outside that class rather than reporting every code as Unrated.
+            (ConvertFrom-CredEchoLogonRecord -Record (& $build '50126')).ErrorConfidence | Should -BeNullOrEmpty
+            (ConvertFrom-CredEchoLogonRecord -Record (& $build '99999')).ErrorConfidence | Should -BeNullOrEmpty
         }
     }
 
@@ -327,6 +387,27 @@ Describe 'ConvertFrom-CredEchoLogonRecord error code classification' {
             (ConvertFrom-CredEchoLogonRecord -Record $record).ErrorClass | Should -Be 'Other'
             $extended = @{ '50072' = 'UserStrongAuthEnrollmentRequiredInterrupt' }
             (ConvertFrom-CredEchoLogonRecord -Record $record -PostPasswordError $extended).ErrorClass | Should -Be 'PostPassword'
+        }
+    }
+
+    It 'honours an overridden username oracle table' {
+        InModuleScope CredEcho {
+            $record = @{
+                id                = 'x'
+                createdDateTime   = '2026-06-10T02:00:00Z'
+                operation         = 'UserLoginFailed'
+                userPrincipalName = 'u@contoso.com'
+                auditData         = @{ ApplicationId = 'app'; ErrorNumber = '50020' }
+            }
+            (ConvertFrom-CredEchoLogonRecord -Record $record).ErrorClass | Should -Be 'Other'
+            $extended = @{ '50020' = 'UserUnauthorized' }
+            $classified = ConvertFrom-CredEchoLogonRecord -Record $record -UsernameOracleError $extended
+            $classified.ErrorClass | Should -Be 'UsernameOracle'
+            $classified.ErrorName | Should -Be 'UserUnauthorized'
+
+            # The rating means nothing outside the post-password class, so a username oracle
+            # addition stays blank rather than picking up the Unrated label.
+            $classified.ErrorConfidence | Should -BeNullOrEmpty
         }
     }
 }
@@ -790,6 +871,104 @@ Describe 'Invoke-CredEchoTriage end to end' {
         }
     }
 
+    Context 'Error code table extension' {
+
+        # The fixture already carries one 50126 record, for probeonly@contoso.com, which the
+        # built-in tables classify as a username oracle event and never triage. Moving 50126 into
+        # the post-password class is therefore a single observable change: that one account
+        # becomes a triage target. 50126 also has no entry in the confidence table, which is what
+        # makes it the right probe for the Unrated path.
+        BeforeAll {
+            $script:extendRun = Invoke-CredEchoTriage -OutputDirectory (Join-Path $TestDrive 'extend') `
+                -SearchStartTime ([datetime]::SpecifyKind([datetime]'2026-06-01T00:00:00', 'Utc')) `
+                -SearchEndTime ([datetime]::SpecifyKind([datetime]'2026-06-30T00:00:00', 'Utc')) `
+                -AllowedApplicationId $script:CredEchoTestApp.Allowed -BaselineDays 90 `
+                -AdditionalPostPasswordErrorCode @{ '50126' = 'InvalidUserNameOrPassword' }
+
+            $script:ratedRun = Invoke-CredEchoTriage -OutputDirectory (Join-Path $TestDrive 'rated') `
+                -SearchStartTime ([datetime]::SpecifyKind([datetime]'2026-06-01T00:00:00', 'Utc')) `
+                -SearchEndTime ([datetime]::SpecifyKind([datetime]'2026-06-30T00:00:00', 'Utc')) `
+                -AllowedApplicationId $script:CredEchoTestApp.Allowed -BaselineDays 90 `
+                -AdditionalPostPasswordErrorCode @{ '50126' = 'InvalidUserNameOrPassword' } `
+                -AdditionalErrorCodeConfidence @{ '50126' = 'Documented' }
+
+            $script:replaceRun = Invoke-CredEchoTriage -OutputDirectory (Join-Path $TestDrive 'replace') `
+                -SearchStartTime ([datetime]::SpecifyKind([datetime]'2026-06-01T00:00:00', 'Utc')) `
+                -SearchEndTime ([datetime]::SpecifyKind([datetime]'2026-06-30T00:00:00', 'Utc')) `
+                -AllowedApplicationId $script:CredEchoTestApp.Allowed -BaselineDays 90 `
+                -PostPasswordErrorCode @{ '50126' = 'InvalidUserNameOrPassword' }
+
+            # 700016 is already post-password, so adding it to the username oracle table probes the
+            # precedence rule: the post-password test runs first and has to keep winning.
+            $script:collideRun = Invoke-CredEchoTriage -OutputDirectory (Join-Path $TestDrive 'collide') `
+                -SearchStartTime ([datetime]::SpecifyKind([datetime]'2026-06-01T00:00:00', 'Utc')) `
+                -SearchEndTime ([datetime]::SpecifyKind([datetime]'2026-06-30T00:00:00', 'Utc')) `
+                -AllowedApplicationId $script:CredEchoTestApp.Allowed -BaselineDays 90 `
+                -AdditionalUsernameOracleErrorCode @{ '700016' = 'UnauthorizedClient_DoesNotMatchRequest' }
+
+            # Emptying the post-password table clears the way, so the same addition now takes
+            # effect and every 700016 record is counted as campaign context instead.
+            $script:oracleRun = Invoke-CredEchoTriage -OutputDirectory (Join-Path $TestDrive 'oracle') `
+                -SearchStartTime ([datetime]::SpecifyKind([datetime]'2026-06-01T00:00:00', 'Utc')) `
+                -SearchEndTime ([datetime]::SpecifyKind([datetime]'2026-06-30T00:00:00', 'Utc')) `
+                -AllowedApplicationId $script:CredEchoTestApp.Allowed -BaselineDays 90 `
+                -PostPasswordErrorCode @{} `
+                -AdditionalUsernameOracleErrorCode @{ '700016' = 'UnauthorizedClient_DoesNotMatchRequest' }
+        }
+
+        It 'adds a code through AdditionalPostPasswordErrorCode without disturbing the built-in table' {
+            # Seven built-in validation events plus the one 50126 record now in the class.
+            $script:extendRun.Summary.ValidationEventCount | Should -Be 8
+            $script:extendRun.ValidationEvent.UserPrincipalName | Should -Contain 'probeonly@contoso.com'
+            $script:extendRun.ValidationEvent.UserPrincipalName | Should -Contain 'jdoe@contoso.com'
+        }
+
+        It 'stops counting an added code as campaign context once it classifies as post-password' {
+            $script:extendRun.Summary.UsernameOracleEventCount | Should -Be 0
+        }
+
+        It 'reports an added code with no rating as Unrated rather than as an empty value' {
+            $added = @($script:extendRun.ValidationEvent | Where-Object { $_.ErrorCode -eq '50126' })[0]
+            $added.ErrorConfidence | Should -Be 'Unrated'
+        }
+
+        It 'leaves the built-in ratings alone when an addition is unrated' {
+            $builtIn = @($script:extendRun.ValidationEvent | Where-Object { $_.ErrorCode -eq '700016' })[0]
+            $builtIn.ErrorConfidence | Should -Be 'Observed'
+        }
+
+        It 'rates an added code from AdditionalErrorCodeConfidence' {
+            $added = @($script:ratedRun.ValidationEvent | Where-Object { $_.ErrorCode -eq '50126' })[0]
+            $added.ErrorConfidence | Should -Be 'Documented'
+        }
+
+        It 'replaces the whole table when PostPasswordErrorCode is supplied' {
+            # Documenting the semantics deliberately: the six built-in codes stop classifying, so
+            # the only validation event left is the one the supplied table names. A caller who
+            # wanted to extend rather than replace has to use AdditionalPostPasswordErrorCode.
+            $script:replaceRun.Summary.ValidationEventCount | Should -Be 1
+            $script:replaceRun.ValidationEvent.ErrorCode | Should -Be '50126'
+            $script:replaceRun.ValidationEvent.UserPrincipalName | Should -Not -Contain 'jdoe@contoso.com'
+        }
+
+        It 'classifies a code reaching both tables as post-password' {
+            $script:collideRun.Summary.ValidationEventCount | Should -Be 7
+            $script:collideRun.Summary.UsernameOracleEventCount | Should -Be 1
+        }
+
+        It 'adds a code through AdditionalUsernameOracleErrorCode as campaign context' {
+            # Ten 700016 records now read as probing, plus the one 50126 record already there.
+            $script:oracleRun.Summary.UsernameOracleEventCount | Should -Be 11
+            $script:oracleRun.Summary.UsernameOracleAccountCount | Should -Be 11
+        }
+
+        It 'produces no triage target from a username oracle addition' {
+            $script:oracleRun.Summary.ValidationEventCount | Should -Be 0
+            $script:oracleRun.Summary.ValidatedAccountCount | Should -Be 0
+            @($script:oracleRun.AccountVerdict).Count | Should -Be 0
+        }
+    }
+
     Context 'Read only' {
 
         It 'never calls Graph with a mutating method' {
@@ -1092,9 +1271,9 @@ Describe 'HTML report renderer' {
             $entry.Confidence | Should -Be ''
         }
 
-        It 'explains the three bases in the report body' {
+        It 'explains every basis in the report body' {
             foreach ($phrase in 'Documented means Microsoft states', 'Observed means the behavior is reported',
-                'Ambiguous means Microsoft categorizes') {
+                'Ambiguous means Microsoft categorizes', 'Unrated means the code was added') {
                 $script:Html | Should -BeLike "*$($phrase)*"
             }
         }

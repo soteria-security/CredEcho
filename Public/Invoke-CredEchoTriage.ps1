@@ -99,12 +99,42 @@ function Invoke-CredEchoTriage {
 
     .PARAMETER PostPasswordErrorCode
     Error codes reachable only after the submitted password validates, as a table of code to
-    name. Override this to add the further codes that Microsoft password spray analytics also
-    treat as post-password.
+    name. This parameter replaces the built-in table outright. It does not add to it, so every
+    code that should still be treated as post-password has to appear in the table supplied,
+    including the six built in. To extend the built-in set instead, use
+    AdditionalPostPasswordErrorCode.
+
+    .PARAMETER AdditionalPostPasswordErrorCode
+    Error codes to add to the post-password table, as a table of code to name. Merges into
+    whichever table is in force, whether that is the built-in set or a replacement supplied
+    through PostPasswordErrorCode, and wins on a shared key. This is the parameter to use to
+    add the further codes that Microsoft password spray analytics also treat as post-password,
+    including 50072, 50057, 50155, 50105, and 53000. A code added here carries no confidence
+    rating of its own, so it is reported as Unrated unless a rating is supplied through
+    AdditionalErrorCodeConfidence.
+
+    .PARAMETER AdditionalErrorCodeConfidence
+    Confidence ratings to add for error codes CredEcho does not rate, as a table of code to
+    rating. Merges into the built-in rating table and wins on a shared key, so a code added
+    through AdditionalPostPasswordErrorCode can be reported on the same footing as a built-in
+    code once the analyst has established the basis for it. Use the same vocabulary the
+    built-in table uses: Documented, Observed, or Ambiguous.
 
     .PARAMETER UsernameOracleErrorCode
     Error codes reachable without a valid password, as a table of code to name. These are
-    counted as campaign context and never produce triage targets.
+    counted as campaign context and never produce triage targets. Like
+    PostPasswordErrorCode, this parameter replaces the built-in table outright rather than
+    adding to it. To extend the built-in set instead, use
+    AdditionalUsernameOracleErrorCode.
+
+    .PARAMETER AdditionalUsernameOracleErrorCode
+    Error codes to add to the username oracle table, as a table of code to name. Merges into
+    whichever table is in force, whether that is the built-in set or a replacement supplied
+    through UsernameOracleErrorCode, and wins on a shared key. Codes added here widen the
+    campaign context count and never produce triage targets, so this is the parameter for
+    accounting for enumeration volume the built-in table misses. A code present in both the
+    post-password and the username oracle table is classified as post-password, because that
+    test runs first.
 
     .PARAMETER FollowOnOperation
     Table of operation name to category for phase three.
@@ -167,6 +197,16 @@ function Invoke-CredEchoTriage {
     Scopes the search to a known campaign period, lengthens the baseline, suppresses a known
     internal client by identifier, and raises the corroboration threshold.
 
+    .EXAMPLE
+    $extra = @{ '50072' = 'UserStrongAuthEnrollmentRequiredInterrupt'; '50057' = 'UserDisabled' }
+    Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042' -AdditionalPostPasswordErrorCode $extra -AdditionalErrorCodeConfidence @{ '50072' = 'Documented' }
+
+    Adds two codes to the post-password table without disturbing the six built in. 50072 is
+    rated at the same time, so it reports as Documented. 50057 is left unrated and reports as
+    Unrated, which keeps leads derived from it visibly weaker than the rest. Use
+    AdditionalPostPasswordErrorCode for this. PostPasswordErrorCode would have discarded the
+    built-in table and left only these two codes classifying as post-password.
+
     .NOTES
     Required Microsoft Graph scopes:
 
@@ -199,7 +239,9 @@ function Invoke-CredEchoTriage {
       and it can change without notice. Error code 50055 is more doubtful still, because
       Microsoft's own password spray detection content classifies it both as a failure and as a
       success. Every validation event therefore carries an ErrorConfidence value of Documented,
-      Observed, or Ambiguous, and leads should be weighted accordingly.
+      Observed, or Ambiguous, and leads should be weighted accordingly. A code added through
+      AdditionalPostPasswordErrorCode without a matching AdditionalErrorCodeConfidence entry
+      carries Unrated, which is not a rating this module vouches for.
 
       The application registration test runs against the application identifier alone, because
       the unified audit log carries no application display name. A client identifier that is not
@@ -274,7 +316,13 @@ function Invoke-CredEchoTriage {
 
         [hashtable] $PostPasswordErrorCode = $script:CredEchoPostPasswordError,
 
+        [hashtable] $AdditionalPostPasswordErrorCode = @{},
+
+        [hashtable] $AdditionalErrorCodeConfidence = @{},
+
         [hashtable] $UsernameOracleErrorCode = $script:CredEchoUsernameOracleError,
+
+        [hashtable] $AdditionalUsernameOracleErrorCode = @{},
 
         [System.Collections.IDictionary] $FollowOnOperation = $script:CredEchoFollowOnOperation,
 
@@ -298,6 +346,13 @@ function Invoke-CredEchoTriage {
         throw "SearchStartTime ($($searchStart.ToString('u'))) must precede SearchEndTime ($($searchEnd.ToString('u')))."
     }
 
+    # Each classification table is a replacement parameter plus an additive one, so the two
+    # compose. The rating table has no replacement parameter, because replacing it wholesale
+    # would discard the basis for the codes that ship rather than extend it.
+    $postPasswordError = Join-CredEchoErrorCodeTable -Base $PostPasswordErrorCode -Addition $AdditionalPostPasswordErrorCode
+    $usernameOracleError = Join-CredEchoErrorCodeTable -Base $UsernameOracleErrorCode -Addition $AdditionalUsernameOracleErrorCode
+    $errorConfidence = Join-CredEchoErrorCodeTable -Base $script:CredEchoErrorConfidence -Addition $AdditionalErrorCodeConfidence
+
     [void] (Test-CredEchoGraphContext -AnyOfScope @('AuditLogsQuery-Entra.Read.All', 'AuditLogsQuery.Read.All') -Capability 'reading Entra audit records from the unified audit log')
     [void] (Test-CredEchoGraphContext -AnyOfScope @('Application.Read.All', 'Application.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All', 'Application.ReadWrite.OwnedBy') -Capability 'enumerating service principals for the application registration test')
     $canReadExchange = Test-CredEchoGraphContext -AnyOfScope @('AuditLogsQuery-Exchange.Read.All', 'AuditLogsQuery.Read.All') -Capability 'reading Exchange audit records for phase three follow-on actions' -Optional
@@ -318,7 +373,7 @@ function Invoke-CredEchoTriage {
         Get-CredEchoAuditRecord -StartTime $searchStart -EndTime $searchEnd `
             -RecordTypeFilter @($script:CredEchoStsRecordType) -OperationFilter @('UserLoginFailed') `
             -Label 'CredEcho phase one' @auditArgument |
-            ConvertFrom-CredEchoLogonRecord -UsernameOracleError $UsernameOracleErrorCode -PostPasswordError $PostPasswordErrorCode
+            ConvertFrom-CredEchoLogonRecord -UsernameOracleError $usernameOracleError -PostPasswordError $postPasswordError -ErrorConfidence $errorConfidence
     )
     Write-Verbose "Retrieved $($failedRecord.Count) failed logon records."
 
@@ -351,7 +406,7 @@ function Invoke-CredEchoTriage {
             Get-CredEchoAuditRecord -StartTime $successStart -EndTime $searchEnd `
                 -RecordTypeFilter @($script:CredEchoStsRecordType) -OperationFilter @('UserLoggedIn') `
                 -UserPrincipalNameFilter $slice -Label 'CredEcho successes' @auditArgument |
-                ConvertFrom-CredEchoLogonRecord -UsernameOracleError $UsernameOracleErrorCode -PostPasswordError $PostPasswordErrorCode |
+                ConvertFrom-CredEchoLogonRecord -UsernameOracleError $usernameOracleError -PostPasswordError $postPasswordError -ErrorConfidence $errorConfidence |
                 ForEach-Object { $successRecord.Add($_) }
         }
     }
@@ -361,7 +416,7 @@ function Invoke-CredEchoTriage {
         Get-CredEchoAuditRecord -StartTime $successStart -EndTime $searchEnd `
             -RecordTypeFilter @($script:CredEchoStsRecordType) -OperationFilter @('UserLoggedIn') `
             -Label 'CredEcho corroboration' @auditArgument |
-            ConvertFrom-CredEchoLogonRecord -UsernameOracleError $UsernameOracleErrorCode -PostPasswordError $PostPasswordErrorCode |
+            ConvertFrom-CredEchoLogonRecord -UsernameOracleError $usernameOracleError -PostPasswordError $postPasswordError -ErrorConfidence $errorConfidence |
             ForEach-Object { $successRecord.Add($_) }
     }
 

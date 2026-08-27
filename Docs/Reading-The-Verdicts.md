@@ -165,6 +165,11 @@ published third-party research rather than a Microsoft commitment, and one is a 
 categorizes inconsistently. Accounts resting only on those codes are the weakest leads in the report,
 and the report labels them so they are visibly weaker rather than silently equal.
 
+**Error code confidence marked "Unrated."** The analyst running the scan added this error code to the
+classification for this run, and did not record a basis for it. CredEcho ships no unrated codes, so
+this label always means an addition made on the engagement rather than a judgment the tool makes.
+Treat it as the analyst's classification and ask what it rests on before acting on the account.
+
 **"Exchange record types were unavailable."** The permissions granted for this run did not allow
 mailbox activity to be examined. Mail forwarding rules, inbox rules, and mailbox permission changes
 were not checked. The follow-on activity section is incomplete, and it says so rather than reading as

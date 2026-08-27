@@ -1049,7 +1049,8 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
         '<p class="muted">Documented means Microsoft states the check runs after the password is ' +
         'verified. Observed means the behavior is reported by third-party research rather than ' +
         'documented by Microsoft. Ambiguous means Microsoft categorizes the code inconsistently, ' +
-        'so it is reported without asserting either way.</p>'
+        'so it is reported without asserting either way. Unrated means the code was added to ' +
+        'this run by the analyst and carries no basis from CredEcho.</p>'
       : '<p class="muted">No post-password error code was recorded on the validation events.</p>';
     return '<div class="indicator-block"><h3>Post-password error codes <span class="muted">(' +
       rows.length + ')</span></h3>' + body + '</div>';

@@ -25,10 +25,33 @@ the post-password classification can be defended:
               to it. Treat as current implementation behavior, not a contract.
   Ambiguous   Microsoft's own detection content classifies the code both ways. Leads derived
               from it are the weakest in the set.
+  Unrated     Not a tier assigned here. Reported for a post-password code an analyst added at
+              run time without supplying a rating, so the addition is visibly the analyst's
+              rather than looking like a rating that failed to render.
 
-Both tables are exposed as parameters on Invoke-CredEchoTriage so an analyst can add the
-codes Microsoft's password spray analytics also treat as post-password, including 50072,
-50057, 50155, 50105, and 53000, without editing this file.
+Every code in the post-password table below is rated, so Unrated never appears for a default
+run.
+
+Extending these tables from Invoke-CredEchoTriage. Each classification table takes the same
+pair of parameters: the base parameter replaces, and the Additional parameter merges and wins
+on a shared key. Reach for the Additional form unless the intent really is to discard what
+ships. The rating table takes the additive form only, because replacing it wholesale would
+discard the basis for the codes that ship rather than extend it.
+
+  AdditionalPostPasswordErrorCode    Merges into the post-password table. This is the parameter
+                                     for adding the codes Microsoft's password spray analytics
+                                     also treat as post-password, including 50072, 50057,
+                                     50155, 50105, and 53000, without editing this file.
+  AdditionalUsernameOracleErrorCode  Merges into the username oracle table, which widens the
+                                     campaign context count without producing triage targets.
+  AdditionalErrorCodeConfidence      Merges into the rating table, so an added code can be
+                                     rated rather than reported as Unrated.
+  PostPasswordErrorCode              Replaces the post-password table outright. Nothing absent
+                                     from the supplied table classifies as post-password.
+  UsernameOracleErrorCode            Replaces the username oracle table outright, on the same
+                                     terms.
+
+A code reaching both tables is classified as post-password, because that test runs first.
 #>
 
 $script:CredEchoUsernameOracleError = @{

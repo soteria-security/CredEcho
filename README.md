@@ -56,9 +56,35 @@ post-password classification rests on different evidence from code to code:
   50053 is treated as a username oracle. Microsoft does not document the ordering.
 
 Every validation event in the output carries its `ErrorConfidence`, so a weak lead is visibly
-weak. Both tables are exposed as parameters, so an analyst can add the further codes that
-Microsoft password spray analytics also treat as post-password, including 50072, 50057, 50155,
-50105, and 53000, without editing code.
+weak.
+
+### Extending the tables
+
+An analyst can add the further codes that Microsoft password spray analytics also treat as
+post-password, including 50072, 50057, 50155, 50105, and 53000, without editing code. Every
+table takes the same pair of parameters. Which one to reach for matters, because the base
+parameter replaces rather than extends.
+
+| Parameter | Effect |
+| --- | --- |
+| `-AdditionalPostPasswordErrorCode` | Merges into the post-password table, and wins on a shared key. Use this to add codes. |
+| `-AdditionalUsernameOracleErrorCode` | Merges into the username oracle table. Widens the campaign context count without producing triage targets. |
+| `-AdditionalErrorCodeConfidence` | Merges into the confidence table, so an added code can be rated rather than reported as `Unrated`. |
+| `-PostPasswordErrorCode` | **Replaces** the post-password table outright. Any built-in code absent from the table supplied stops classifying as post-password. |
+| `-UsernameOracleErrorCode` | **Replaces** the username oracle table outright, on the same terms. |
+
+```powershell
+Invoke-CredEchoTriage -OutputDirectory 'C:\Cases\1042' `
+    -AdditionalPostPasswordErrorCode @{ '50072' = 'UserStrongAuthEnrollmentRequiredInterrupt' } `
+    -AdditionalErrorCodeConfidence @{ '50072' = 'Documented' } `
+    -AdditionalUsernameOracleErrorCode @{ '50020' = 'UserUnauthorized' }
+```
+
+A code reaching both tables is classified as post-password, because that test runs first.
+
+A post-password code added without a rating reports as `Unrated`. That is not a fifth basis
+alongside the four above. It records that the classification is the analyst's and that CredEcho
+does not vouch for it, which is a different statement from an empty cell.
 
 ## Evidence source
 

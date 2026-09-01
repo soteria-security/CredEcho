@@ -344,8 +344,20 @@ choice.
 #### Summary in the card, detail in the flyout
 
 An expanded card is a summary, not a dump. It shows the validation error codes with the basis on
-which each was classified, a table of unique source address and client pairings, the follow-on
-actions, and the distinct signals for the account.
+which each was classified, the audit events that triggered the finding, a table of unique source
+address and client pairings, the follow-on actions, and the distinct signals for the account.
+
+**The card names the evidence for its own verdict.** The events that triggered this finding section
+reports the validation records the verdict rests on: the timestamp, the error code and its name, the
+basis on which that code is classified as post-password, the source address and its prefix, the user
+agent, the application identifier, and the request type. Without it a reader had to open the detail
+flyout and read the timeline to work out which event produced the verdict.
+
+**Long sections stop at ten rows.** The validation error codes, the trigger events, the pairing
+table, and the follow-on actions each show the first ten entries, then state how many were withheld
+and offer a control that opens the remainder in the flyout. One test account carried 78 pairings and
+another carried 75 follow-on actions, either of which would put the detail controls several screens
+below the card header. A section that fits within ten rows is shown whole and gains no control.
 
 The pairing table is the change that keeps the card readable. An account an adversary hammered
 produces hundreds of scored sign-ins that mostly repeat the same address and the same client, and a
@@ -364,8 +376,13 @@ Three properties of that collapse matter:
   says so rather than rendering empty.
 
 A **View all details** button opens a flyout carrying the exhaustive record: the timeline, every
-individual scored sign-in, and the follow-on actions. Escape, the close button, or a click outside
-dismisses it.
+individual scored sign-in, and the complete form of any section the card truncated. Escape, the
+close button, or a click outside dismisses it.
+
+One flyout serves the whole card. Each control names the node it wants to show, so **View all
+details** opens the entire record while the control beside a truncated section opens that section
+alone, and the flyout header states which of the two is on screen. Capping a further section does
+not mean adding a further panel to open it.
 
 That detail is not fetched or rebuilt. It is authored once into a hidden node inside the card, and
 the flyout renders a copy of that same node, so the card, the flyout, and the printed page cannot
@@ -403,9 +420,11 @@ theme.
 
 The detail that the screen hides behind the flyout is printed in full. A reader cannot click a button
 on paper, so the hidden detail node becomes visible for print and the flyout controls disappear:
-the PDF carries the pairing summary and every individual sign-in, and no finding is trapped behind an
-interaction the medium does not support. A print started while the flyout is open closes it first, so
-pagination is never computed against a locked page.
+the PDF carries every pairing, every individual sign-in, and every follow-on action, and no finding
+is trapped behind an interaction the medium does not support. Where a section was capped on screen,
+the ten-row extract is suppressed for print and the complete list is taken from the detail node
+instead, so the PDF neither stops at ten rows nor prints the same section twice. A print started
+while the flyout is open closes it first, so pagination is never computed against a locked page.
 
 ### Verdict ladder
 

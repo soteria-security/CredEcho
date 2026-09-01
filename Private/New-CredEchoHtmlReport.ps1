@@ -237,6 +237,32 @@ function New-CredEchoHtmlReport {
                 }
             })
 
+        <#
+        The audit records that placed this account in triage.
+
+        Every other section on the card is downstream of these events, and the card previously
+        asserted the finding without naming its basis. A reader had to open the detail flyout and
+        read the timeline to learn which validation event produced the verdict. The events are now
+        stated on the card itself.
+        #>
+        $validationRow = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($record in ($accountValidation | Where-Object { $null -ne $_ } | Sort-Object -Property @{ Expression = { ConvertTo-CredEchoDateTime $_.TimeStamp } })) {
+            $stamp = ConvertTo-CredEchoDateTime $record.TimeStamp
+            $validationRow.Add([pscustomobject]@{
+                    TimeStamp     = Protect-CredEchoHtmlText $(if ($null -ne $stamp) { $stamp.ToString('yyyy-MM-dd HH:mm:ss') } else { '' })
+                    ErrorCode     = Protect-CredEchoHtmlText $record.ErrorCode
+                    ErrorName     = Protect-CredEchoHtmlText $record.ErrorName
+                    ErrorClass    = Protect-CredEchoHtmlText $record.ErrorClass
+                    Confidence    = Protect-CredEchoHtmlText $record.ErrorConfidence
+                    IpAddress     = Protect-CredEchoHtmlText $(if ([string]::IsNullOrWhiteSpace([string] $record.IpAddress)) { 'not recorded' } else { $record.IpAddress })
+                    IpPrefix      = Protect-CredEchoHtmlText $record.IpPrefix
+                    UserAgent     = Protect-CredEchoHtmlText $record.UserAgent
+                    ApplicationId = Protect-CredEchoHtmlText $record.ApplicationId
+                    RequestType   = Protect-CredEchoHtmlText $record.RequestType
+                    Operation     = Protect-CredEchoHtmlText $record.Operation
+                })
+        }
+
         $followOnRow = New-Object 'System.Collections.Generic.List[psobject]'
         foreach ($action in ($accountFollowOn | Sort-Object -Property @{ Expression = { ConvertTo-CredEchoDateTime $_.TimeStamp } })) {
             $stamp = ConvertTo-CredEchoDateTime $action.TimeStamp
@@ -324,6 +350,7 @@ function New-CredEchoHtmlReport {
                         if ($errorConfidence.Contains($accountCode)) { $errorConfidence[$accountCode] }
                         else { [pscustomobject]@{ Code = Protect-CredEchoHtmlText $accountCode; Name = ''; Confidence = ''; EventCount = 0 } }
                     })
+                ValidationEvent      = $validationRow.ToArray()
                 DistinctSignal       = @(@($account.DistinctSignal) | Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } | ForEach-Object { Protect-CredEchoHtmlText $_ })
                 SignIn               = $signInRow.ToArray()
                 SourceClient         = $sourceClientRow
@@ -581,6 +608,22 @@ html.dark .ctx-card .label { color: #9aa3ba; }
 html.dark .indicator-list li { background: #232742; }
 .code-basis { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.25rem; }
 .account-code { font-size: 0.8125rem; margin-bottom: 0.35rem; }
+/* The trigger event table carries a timestamp, an address, a client string, and a globally unique
+   identifier across seven columns. The default break-anywhere rule that .mono applies splits an
+   IPv4 address mid octet at that width, which ruins the one column a reader scans first, so the
+   timestamp and the address hold their tokens together and the client string absorbs the slack. */
+.trigger-table td.when, .trigger-table td.addr { word-break: normal; }
+/* .mono breaks a token at any point, and the automatic table layout spends that permission on the
+   columns it can compress. A signal tag cannot break, so in a narrow container the signals column
+   holds its width and the address and the client string collapse to a few characters a line. Those
+   are the two columns a reader scans, so both are given a floor the layout has to respect. */
+th.addr, td.addr { min-width: 9rem; }
+th.agent, td.agent { min-width: 13rem; }
+/* The target object can be a semicolon delimited resource list several hundred characters long. A
+   list that long sets a minimum content width no container can honour, and the columns to its right
+   are pushed past the edge of the card and off the side of the flyout, so this one cell is allowed
+   to break at any point. */
+.followon-table td.target { overflow-wrap: anywhere; word-break: normal; }
 .suppression { margin-top: 1rem; border-top: 1px solid #e3e8f2; padding-top: 0.75rem; }
 html.dark .suppression { border-top-color: #2a2f45; }
 
@@ -667,6 +710,14 @@ html.dark .notice { background: #232742; }
    revealed for print. The flyout renders a copy of that same node, so the screen stays short, the
    PDF stays complete, and there is only one place the detail is authored. */
 .full-detail { display: none; }
+/* A capped section shows the first ten rows and hands the remainder to a flyout keyed to the
+   matching node inside .full-detail. The note carries the count, because a reader who cannot see
+   how much was withheld has no way to judge whether opening the flyout is worth the click. */
+.detail-note {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  margin: 0.5rem 0 0.25rem; font-size: 0.8125rem; color: #5b6478;
+}
+html.dark .detail-note { color: #9aa3ba; }
 .detail-actions {
   display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
   margin: 0.65rem 0 0.25rem;
@@ -679,6 +730,15 @@ html.dark .notice { background: #232742; }
 .view-all:hover { background: #17498f; }
 html.dark .view-all { border-color: #2563eb; background: #2563eb; }
 html.dark .view-all:hover { background: #1d4ed8; }
+/* The per-section overflow control is subordinate to the card level View all details button, so it
+   is drawn as an outline rather than competing for the same emphasis. */
+.view-all.secondary {
+  padding: 0.25rem 0.7rem; font-size: 0.75rem; font-weight: 600;
+  border-color: #c9d2e3; background: #fff; color: #1e5bb8;
+}
+.view-all.secondary:hover { background: #eef2f9; }
+html.dark .view-all.secondary { border-color: #343a5c; background: #232742; color: #93b4f5; }
+html.dark .view-all.secondary:hover { background: #2b3050; }
 
 #flyout-scrim {
   position: fixed; top: 0; right: 0; bottom: 0; left: 0;
@@ -686,7 +746,8 @@ html.dark .view-all:hover { background: #1d4ed8; }
 }
 #flyout {
   position: fixed; top: 0; right: 0; bottom: 0;
-  width: 92vw; max-width: 940px; z-index: 41;
+  /* Wide enough for the seven column tables to meet their column floors without scrolling. */
+  width: 92vw; max-width: 1240px; z-index: 41;
   display: flex; flex-direction: column;
   background: #f7f8fb; box-shadow: -8px 0 28px rgba(15, 20, 35, 0.28);
 }
@@ -707,7 +768,9 @@ html.dark .flyout-head { background: #1a1d2e; border-bottom-color: #2a2f45; }
 #flyout-close:hover { color: #1f2430; }
 html.dark #flyout-close { color: #9aa3ba; }
 html.dark #flyout-close:hover { color: #e4e7f0; }
-.flyout-body { flex: 1 1 auto; overflow-y: auto; padding: 1rem 1.25rem 2.5rem; }
+/* On a window too narrow to seat the widest table the body scrolls sideways rather than crushing
+   the columns, which is the one outcome worse than a scrollbar. */
+.flyout-body { flex: 1 1 auto; overflow-y: auto; overflow-x: auto; padding: 1rem 1.25rem 2.5rem; }
 .flyout-body .subhead:first-child { margin-top: 0; }
 body.flyout-open { overflow: hidden; }
 
@@ -748,7 +811,11 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
   /* The exhaustive record is hidden on screen and printed in full, so the PDF loses no finding to a
      panel the reader cannot open on paper. */
   .full-detail { display: block !important; }
-  .detail-actions, #flyout, #flyout-scrim { display: none !important; }
+  /* The on-screen copy of a truncated section is an extract. Print takes the complete list from
+     .full-detail instead, so the PDF neither stops at ten rows nor prints the section twice. A
+     section that was not truncated keeps its on-screen copy and has no counterpart to duplicate. */
+  .capped.truncated { display: none !important; }
+  .detail-actions, .detail-note, #flyout, #flyout-scrim { display: none !important; }
   body.flyout-open { overflow: visible !important; }
   .account-head { cursor: default; }
   .account, .card, .page-header, .brand-footer { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; border: 1px solid #d5dbe8 !important; }
@@ -1081,7 +1148,21 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       'Excluded by the analyst running the collection.') +
     '</ul>';
 
-  /* ---------- account cards ---------- */
+  /* ---------- account cards ----------
+     A long list is capped on the card and the complete list is authored once inside .full-detail.
+     The flyout clones the node it is pointed at, so the extract, the flyout, and the printed page
+     are three views of one authored list and cannot disagree. */
+  var CAP = 10;
+
+  function cap(rows, limited) { return limited && rows.length > CAP ? rows.slice(0, CAP) : rows; }
+
+  function overflowNote(total, noun, target, label) {
+    if (total <= CAP) { return ''; }
+    return '<div class="detail-note"><span>Showing the first ' + CAP + ' of ' + total + ' ' + noun +
+      '.</span><button type="button" class="view-all secondary" data-detail-target="' + target +
+      '" data-detail-label="' + label + '">View all ' + total + '</button></div>';
+  }
+
   function signalTags(tags) {
     var rows = list(tags);
     if (!rows.length) { return '<span class="muted">none</span>'; }
@@ -1101,8 +1182,8 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       h += '<tr>' +
         '<td class="num mono">' + r.TimeStamp + '</td>' +
         '<td class="num">' + r.HoursAfter + '</td>' +
-        '<td class="mono">' + r.IpAddress + '<br><span class="muted">' + r.IpPrefix + '</span></td>' +
-        '<td class="mono">' + r.UserAgent + '</td>' +
+        '<td class="mono addr">' + r.IpAddress + '<br><span class="muted">' + r.IpPrefix + '</span></td>' +
+        '<td class="mono agent">' + r.UserAgent + '</td>' +
         '<td class="mono">' + r.ApplicationId + '</td>' +
         '<td><span class="pill p-' + cls(r.Tier) + '">' + r.Tier + '</span></td>' +
         '<td>' + signalTags(r.Signal) + '</td>' +
@@ -1113,7 +1194,7 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
 
   /* One row per unique source address and client. The count column is what tells the reader that a
      single row stands for many events, so it is never omitted. */
-  function sourceClientTable(source) {
+  function sourceClientTable(source, limited) {
     var rows = list(source);
     if (!rows.length) {
       return '<p class="muted">No post-validation sign-in earned a signal for this account, so there is no source or client pairing to summarise.</p>';
@@ -1122,10 +1203,10 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       '<th>Source address</th><th>User agent</th><th class="num">Sign-ins</th>' +
       '<th>First seen (UTC)</th><th>Last seen (UTC)</th><th>Highest tier</th><th>Signals</th>' +
       '</tr></thead><tbody>';
-    rows.forEach(function (r) {
+    cap(rows, limited).forEach(function (r) {
       h += '<tr>' +
-        '<td class="mono">' + r.IpAddress + '<br><span class="muted">' + r.IpPrefix + '</span></td>' +
-        '<td class="mono">' + r.UserAgent + '</td>' +
+        '<td class="mono addr">' + r.IpAddress + '<br><span class="muted">' + r.IpPrefix + '</span></td>' +
+        '<td class="mono agent">' + r.UserAgent + '</td>' +
         '<td class="num"><strong>' + r.SignInCount + '</strong></td>' +
         '<td class="num mono">' + r.FirstSeen + '</td>' +
         '<td class="num mono">' + r.LastSeen + '</td>' +
@@ -1136,17 +1217,17 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     return h + '</tbody></table>';
   }
 
-  function followOnTable(source) {
+  function followOnTable(source, limited) {
     var rows = list(source);
     if (!rows.length) {
       return '<p class="muted">No follow-on persistence action was recorded for this account.</p>';
     }
-    var h = '<table><thead><tr><th>Timestamp (UTC)</th><th>Operation</th><th>Category</th>' +
-      '<th>Target object</th><th>Source address</th></tr></thead><tbody>';
-    rows.forEach(function (r) {
+    var h = '<table class="followon-table"><thead><tr><th>Timestamp (UTC)</th><th>Operation</th>' +
+      '<th>Category</th><th>Target object</th><th>Source address</th></tr></thead><tbody>';
+    cap(rows, limited).forEach(function (r) {
       var target = r.TargetObject ? r.TargetObject : '<span class="muted">not recorded</span>';
       h += '<tr><td class="num mono">' + r.TimeStamp + '</td><td>' + r.Operation + '</td>' +
-        '<td>' + r.Category + '</td><td>' + target + '</td>' +
+        '<td>' + r.Category + '</td><td class="target">' + target + '</td>' +
         '<td class="mono">' + r.IpAddress + '</td></tr>';
     });
     return h + '</tbody></table>';
@@ -1164,16 +1245,51 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     }).join('') + '</ul>';
   }
 
-  function errorCodeTags(items) {
+  function errorCodeTags(items, limited) {
     var rows = list(items);
     if (!rows.length) {
       return '<p class="muted">No validation error code was recorded for this account. This is expected when the account was supplied by the analyst rather than detected from an audit record.</p>';
     }
-    return rows.map(function (e) {
+    return cap(rows, limited).map(function (e) {
       var name = e.Name ? ' ' + e.Name : '';
       var conf = e.Confidence ? ' <span class="signal-tag">' + e.Confidence + '</span>' : '';
       return '<div class="account-code"><span class="mono">' + e.Code + '</span>' + name + conf + '</div>';
     }).join('');
+  }
+
+  /* The audit records that produced the verdict. A post-password error means the submitted password
+     was accepted and the request failed at a later stage, which is the entire basis of the finding,
+     so the basis column carries the confidence rating for the code rather than leaving the reader to
+     look it up in the indicator section. */
+  function validationEventTable(source, limited) {
+    var rows = list(source);
+    if (!rows.length) {
+      return '<p class="muted">No validation event is recorded for this account, so no audit record can be shown. This is expected when the account was supplied by the analyst rather than detected from an audit record.</p>';
+    }
+    var h = '<table class="trigger-table"><thead><tr>' +
+      '<th>Timestamp (UTC)</th><th>Error</th><th>Basis</th><th>Source address</th>' +
+      '<th>User agent</th><th>Application identifier</th><th>Request type</th>' +
+      '</tr></thead><tbody>';
+    cap(rows, limited).forEach(function (r) {
+      var name = r.ErrorName ? '<br><span class="muted">' + r.ErrorName + '</span>' : '';
+      var basis = r.Confidence
+        ? '<span class="signal-tag">' + r.Confidence + '</span>'
+        : '<span class="muted">not rated</span>';
+      var prefix = r.IpPrefix ? '<br><span class="muted">' + r.IpPrefix + '</span>' : '';
+      var agent = r.UserAgent ? r.UserAgent : '<span class="muted">not recorded</span>';
+      var app = r.ApplicationId ? r.ApplicationId : '<span class="muted">not recorded</span>';
+      var req = r.RequestType ? r.RequestType : '<span class="muted">not recorded</span>';
+      h += '<tr>' +
+        '<td class="num mono when">' + r.TimeStamp + '</td>' +
+        '<td class="mono">' + r.ErrorCode + name + '</td>' +
+        '<td>' + basis + '</td>' +
+        '<td class="mono addr">' + r.IpAddress + prefix + '</td>' +
+        '<td class="mono agent">' + agent + '</td>' +
+        '<td class="mono">' + app + '</td>' +
+        '<td class="mono">' + req + '</td>' +
+        '</tr>';
+    });
+    return h + '</tbody></table>';
   }
 
   function accountCard(a) {
@@ -1188,6 +1304,35 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
     var detailSummary = pairCount + (pairCount === 1 ? ' pairing across ' : ' pairings across ') +
       a.FlaggedSignInCount + (a.FlaggedSignInCount === 1 ? ' scored sign-in' : ' scored sign-ins');
 
+    var codeCount = list(a.ValidationErrorCode).length;
+    var eventCount = list(a.ValidationEvent).length;
+    var actionCount = list(a.FollowOn).length;
+
+    /* Only a section that was actually truncated gets a complete copy inside .full-detail. A
+       section that fits on the card is already complete, so a second copy would print the same
+       table twice and would put a flyout behind a button with nothing further to show. */
+    var overflowDetail = '';
+    if (codeCount > CAP) {
+      overflowDetail += '<div class="detail-codes">' +
+        '<div class="subhead">Validation error codes</div>' + errorCodeTags(a.ValidationErrorCode, false) +
+        '</div>';
+    }
+    if (eventCount > CAP) {
+      overflowDetail += '<div class="detail-events">' +
+        '<div class="subhead">Events that triggered this finding</div>' + validationEventTable(a.ValidationEvent, false) +
+        '</div>';
+    }
+    if (pairCount > CAP) {
+      overflowDetail += '<div class="detail-pairings">' +
+        '<div class="subhead">Unique source and client pairings</div>' + sourceClientTable(a.SourceClient, false) +
+        '</div>';
+    }
+    var followOnDetail = actionCount > CAP
+      ? '<div class="detail-followon">' +
+          '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn, false) +
+        '</div>'
+      : '';
+
     return '<article class="card account" data-verdict="' + a.Verdict + '" data-search="' + a.SearchBlob + '">' +
       '<div class="account-head">' +
         '<span class="chev account-toggle">&#9656;</span>' +
@@ -1195,6 +1340,7 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
         '<span class="pill p-' + cls(a.Verdict) + '">' + LABEL[a.Verdict] + '</span>' +
         '<span class="spacer"></span>' +
         '<span class="account-metric">Validated <strong>' + a.FirstValidation + '</strong></span>' +
+        '<span class="account-metric">Trigger events <strong>' + eventCount + '</strong></span>' +
         '<span class="account-metric">Baseline <strong>' + a.BaselineSignInCount + '</strong></span>' +
         '<span class="account-metric">Subsequent <strong>' + a.SubsequentSignInCount + '</strong></span>' +
         '<span class="account-metric">Flagged <strong>' + a.FlaggedSignInCount + '</strong></span>' +
@@ -1202,19 +1348,34 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
       '</div>' +
       '<div class="account-body">' +
         assumedNote + baselineNote +
-        '<div class="subhead">Validation error codes</div>' + errorCodeTags(a.ValidationErrorCode) +
-        '<div class="subhead">Unique source and client pairings</div>' + sourceClientTable(a.SourceClient) +
+        '<div class="capped' + (codeCount > CAP ? ' truncated' : '') + '">' +
+          '<div class="subhead">Validation error codes</div>' + errorCodeTags(a.ValidationErrorCode, true) +
+          overflowNote(codeCount, 'error codes', '.detail-codes', 'Validation error codes') +
+        '</div>' +
+        '<div class="capped' + (eventCount > CAP ? ' truncated' : '') + '">' +
+          '<div class="subhead">Events that triggered this finding</div>' + validationEventTable(a.ValidationEvent, true) +
+          overflowNote(eventCount, 'validation events', '.detail-events', 'Events that triggered this finding') +
+        '</div>' +
+        '<div class="capped' + (pairCount > CAP ? ' truncated' : '') + '">' +
+          '<div class="subhead">Unique source and client pairings</div>' + sourceClientTable(a.SourceClient, true) +
+          overflowNote(pairCount, 'pairings', '.detail-pairings', 'Unique source and client pairings') +
+        '</div>' +
         '<div class="detail-actions">' +
-          '<button type="button" class="view-all">View all details</button>' +
+          '<button type="button" class="view-all" data-detail-target=".full-detail" data-detail-label="Full detail">View all details</button>' +
           '<span class="muted">' + detailSummary + '. The timeline and every individual sign-in are in the detail view.</span>' +
         '</div>' +
-        '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn) +
+        '<div class="capped' + (actionCount > CAP ? ' truncated' : '') + '">' +
+          '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn, true) +
+          overflowNote(actionCount, 'follow-on actions', '.detail-followon', 'Follow-on actions') +
+        '</div>' +
         '<div class="subhead">Distinct signals for this account</div>' + signalTags(a.DistinctSignal) +
-        /* Hidden on screen, printed in full, and cloned into the flyout on demand. */
+        /* Hidden on screen, printed in full, and cloned into the flyout on demand. Each child is
+           addressable on its own, so one flyout serves the whole card and every capped section. */
         '<div class="full-detail">' +
+          overflowDetail +
           '<div class="subhead">Timeline</div>' + timelineList(a.Timeline) +
           '<div class="subhead">Every scored sign-in</div>' + signInTable(a.SignIn) +
-          '<div class="subhead">Follow-on actions</div>' + followOnTable(a.FollowOn) +
+          followOnDetail +
         '</div>' +
       '</div>' +
       '</article>';
@@ -1246,8 +1407,10 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
   el('collapse-all').addEventListener('click', function () { setAll(false); });
 
   /* ---------- detail flyout ----------
-     The flyout renders a copy of the card's own .full-detail node rather than re-deriving the
-     markup, so the screen view, the flyout, and the printed page can never disagree. */
+     The flyout renders a copy of a node the card already carries rather than re-deriving the
+     markup, so the screen view, the flyout, and the printed page can never disagree. The trigger
+     names the node it wants through data-detail-target, which is how one flyout serves both the
+     card level View all details button and the per-section overflow controls. */
   var flyout = el('flyout');
   var flyoutScrim = el('flyout-scrim');
   var flyoutBody = el('flyout-body');
@@ -1255,11 +1418,16 @@ html.dark .brand-footer .stamp { color: #9aa3ba; }
   var flyoutReturnFocus = null;
 
   function openFlyout(card, trigger) {
-    var detail = card.querySelector('.full-detail');
+    var selector = trigger && trigger.getAttribute ? trigger.getAttribute('data-detail-target') : null;
+    var label = trigger && trigger.getAttribute ? trigger.getAttribute('data-detail-label') : null;
+    if (!selector) { selector = '.full-detail'; }
+
+    var detail = card.querySelector(selector);
     var upn = card.querySelector('.account-head .upn');
     var pill = card.querySelector('.account-head .pill');
 
-    flyoutTitle.innerHTML = (upn ? upn.outerHTML : '') + (pill ? pill.outerHTML : '');
+    flyoutTitle.innerHTML = (upn ? upn.outerHTML : '') + (pill ? pill.outerHTML : '') +
+      (label ? '<span class="muted">' + label + '</span>' : '');
     flyoutBody.innerHTML = detail ? detail.innerHTML : '<p class="muted">No detail is available for this account.</p>';
     flyoutBody.scrollTop = 0;
 

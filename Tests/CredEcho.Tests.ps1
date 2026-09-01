@@ -1597,7 +1597,7 @@ Describe 'HTML report renderer' {
         It 'prints the exhaustive record even though the screen hides it' {
             $script:PairHtml | Should -BeLike '*.full-detail { display: none; }*'
             $script:PairHtml | Should -BeLike '*.full-detail { display: block !important; }*'
-            $script:PairHtml | Should -BeLike '*.detail-actions, #flyout, #flyout-scrim { display: none !important; }*'
+            $script:PairHtml | Should -BeLike '*.detail-actions, .detail-note, #flyout, #flyout-scrim { display: none !important; }*'
         }
 
         It 'closes the flyout before printing so pagination is not locked' {
@@ -1606,6 +1606,134 @@ Describe 'HTML report renderer' {
 
         It 'keeps the flyout free of external resources' {
             $script:PairHtml | Should -Not -Match '(?i)<(link|img|iframe|object|embed)\b'
+        }
+    }
+
+    Context 'Capped sections and targeted flyouts' {
+
+        BeforeAll {
+            # A section only caps once it passes ten rows, and the shared fixture carries one or two
+            # of everything. This account carries twelve validation events under twelve distinct
+            # error codes, fourteen pairings, and twelve follow-on actions, so all four capped
+            # sections on the card are exercised at once.
+            $capAgent = 'Mozilla/5.0 (Windows NT 10.0) Chrome/146.0.0.0'
+
+            $capValidation = @(1..12 | ForEach-Object {
+                    [pscustomobject]@{ RecordId = "w$($_)"; TimeStamp = ('2026-06-{0:d2}T02:00:00Z' -f $_)
+                        Operation = 'UserLoginFailed'; RecordType = 'azureActiveDirectoryStsLogon'
+                        UserPrincipalName = 'flooded@contoso.com'
+                        ApplicationId = 'ffff9999-9999-9999-9999-999999999999'
+                        ErrorCode = "7000$($_)"; ErrorClass = 'PostPassword'; ErrorName = "NamedCode$($_)"
+                        ErrorConfidence = 'Observed'; LogonError = 'InvalidResourceServicePrincipalNotFound'
+                        IpAddress = '185.220.101.44'; IpPrefix = '185.220.101.0/24'
+                        # The hostile agent rides the new trigger event path as well as the old ones.
+                        UserAgent = $script:HostileAgent
+                        RequestType = 'OAuth2:Token'; ResultStatusDetail = ''; IsSuccess = $false }
+                })
+
+            # One address per sign-in, so every sign-in is its own pairing and the collapse cannot
+            # bring the section back under the cap.
+            $capFlagged = @(1..14 | ForEach-Object {
+                    [pscustomobject]@{ UserPrincipalName = 'flooded@contoso.com'
+                        TimeStamp = ('2026-06-{0:d2}T09:00:00Z' -f $_); Tier = 'Possible'
+                        Signal = @('FirstSeenSourceAddressWithMultifactor:Possible')
+                        IpAddress = "198.51.100.$($_)"; IpPrefix = '198.51.100.0/24'; UserAgent = $capAgent
+                        ApplicationId = 'dddd4444-4444-4444-4444-444444444444'; RecordId = "c$($_)"
+                        ClientAppUsed = 'Browser'; ConditionalAccessStatus = 'success'
+                        AuthenticationRequirement = 'multiFactorAuthentication'; AuthenticationProtocol = ''
+                        RiskLevelDuringSignIn = ''; AutonomousSystemNumber = $null; Enriched = $true }
+                })
+
+            $capFollowOn = @(1..12 | ForEach-Object {
+                    [pscustomobject]@{ UserPrincipalName = 'flooded@contoso.com'
+                        TimeStamp = ('2026-06-{0:d2}T12:00:00Z' -f $_); Operation = 'Consent to application.'
+                        Category = 'ApplicationManagement'; RecordType = 'azureActiveDirectory'
+                        IpAddress = '198.51.100.1'; TargetObject = "app-$($_)"; RecordId = "g$($_)"
+                        IsTargetAccount = $true }
+                })
+
+            $capVerdict = @(
+                [pscustomobject]@{ UserPrincipalName = 'flooded@contoso.com'; Verdict = 'Confirmed'
+                    ConfirmedSignalCount = 0; ProbableSignalCount = 0; PossibleSignalCount = 14
+                    DistinctSignal = @('FirstSeenSourceAddressWithMultifactor:Possible')
+                    FirstValidation = '2026-06-01T02:00:00Z'; LastValidation = '2026-06-12T02:00:00Z'
+                    ValidationErrorCode = @($capValidation | ForEach-Object { $_.ErrorCode })
+                    ValidationSourceAddress = @('185.220.101.44'); ValidationTimestampAssumed = $false
+                    PostValidationSignInCount = 20; FlaggedSignInCount = 14; FollowOnActionCount = 12
+                    BaselineAssessed = $true; BaselineSignInCount = 30; NoveltyAssessment = 'Assessed' }
+            )
+
+            $capFixture = [pscustomobject]@{
+                Summary         = $script:Fixture.Summary
+                AccountVerdict  = $capVerdict
+                ValidationEvent = $capValidation
+                FlaggedSignIn   = $capFlagged
+                FollowOnAction  = $capFollowOn
+            }
+
+            $script:CapPath = Join-Path $TestDrive 'capped\TriageReport.html'
+            New-Item -Path (Split-Path $script:CapPath -Parent) -ItemType Directory -Force | Out-Null
+            InModuleScope CredEcho -Parameters @{ Fixture = $capFixture; Target = $script:CapPath } {
+                New-CredEchoHtmlReport -TriageResult $Fixture -Path $Target | Out-Null
+            }
+            $script:CapHtml = Get-Content -LiteralPath $script:CapPath -Raw
+            $script:CapData = ([regex]::Match($script:CapHtml, 'var REPORT_DATA = (?<json>.+?);</script>')).Groups['json'].Value | ConvertFrom-Json
+            $script:CapAccount = @($script:CapData.Account)[0]
+        }
+
+        It 'carries the audit events the verdict rests on, so the card can name its own trigger' {
+            @($script:CapAccount.ValidationEvent).Count | Should -Be 12
+            $first = @($script:CapAccount.ValidationEvent)[0]
+            $first.ErrorCode | Should -Be '70001'
+            $first.ErrorName | Should -Be 'NamedCode1'
+            # The basis is what tells a reader how far the post-password classification can be
+            # defended, so it travels with the event rather than only with the code list.
+            $first.Confidence | Should -Be 'Observed'
+            $first.RequestType | Should -Be 'OAuth2:Token'
+            $first.IpPrefix | Should -Be '185.220.101.0/24'
+        }
+
+        It 'orders the trigger events chronologically regardless of input order' {
+            $stamps = @($script:CapAccount.ValidationEvent | ForEach-Object { $_.TimeStamp })
+            $stamps[0] | Should -Be '2026-06-01 02:00:00'
+            $stamps[-1] | Should -Be '2026-06-12 02:00:00'
+        }
+
+        It 'encodes an attacker user agent on the trigger event path as well as the older ones' {
+            @($script:CapAccount.ValidationEvent)[0].UserAgent | Should -BeLike '*&lt;img src=x*'
+            $script:CapHtml | Should -Not -BeLike '*<img src=x*'
+            $script:CapHtml | Should -Not -BeLike '*</script><script>fetch(1)*'
+        }
+
+        It 'keeps the whole of a capped section in the payload, so the cap is presentation only' {
+            @($script:CapAccount.ValidationErrorCode).Count | Should -Be 12
+            @($script:CapAccount.SourceClient).Count | Should -Be 14
+            $script:CapAccount.SourceClientCount | Should -Be 14
+            @($script:CapAccount.FollowOn).Count | Should -Be 12
+            # The pairings still reconcile against the flagged total after the cap is applied.
+            (@($script:CapAccount.SourceClient) | Measure-Object -Property SignInCount -Sum).Sum |
+                Should -Be $script:CapAccount.FlaggedSignInCount
+        }
+
+        It 'caps a long section at ten rows and states how many were withheld' {
+            $script:CapHtml | Should -BeLike '*var CAP = 10;*'
+            $script:CapHtml | Should -BeLike "*Showing the first ' + CAP + ' of ' + total*"
+        }
+
+        It 'points each overflow control at the node holding the rest of that one section' {
+            foreach ($node in '.detail-codes', '.detail-events', '.detail-pairings', '.detail-followon') {
+                $script:CapHtml | Should -BeLike "*$($node)*"
+            }
+            # One flyout serves the card. The trigger names the node, so a new capped section needs
+            # no new panel.
+            $script:CapHtml | Should -BeLike "*getAttribute('data-detail-target')*"
+            $script:CapHtml | Should -BeLike '*data-detail-target=".full-detail" data-detail-label="Full detail"*'
+        }
+
+        It 'suppresses a capped screen section for print rather than truncating the PDF' {
+            # Without this the PDF would either stop at ten rows or print the extract and the full
+            # list one after the other.
+            $script:CapHtml | Should -BeLike '*.capped.truncated { display: none !important; }*'
         }
     }
 
